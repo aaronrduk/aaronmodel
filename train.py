@@ -67,7 +67,7 @@ def parse_args():
     p.add_argument(
         "--train_dirs",
         nargs="+",
-        default=["data/MAP1", "data/MAP2"],
+        default=["/Users/aaronr/Desktop/DATA/MAP1", "/Users/aaronr/Desktop/DATA/MAP2"],
         help="Directories containing MAP*.tif + shapefiles",
     )
     p.add_argument("--val_dir", default=None, help="Separate validation directory")
@@ -154,8 +154,7 @@ def main():
     train_loader, val_loader = create_dataloaders(
         train_dirs=config.train_dirs,
         val_dir=config.val_dir,
-        tile_size=config.tile_size,
-        tile_overlap=config.tile_overlap if hasattr(config, "tile_overlap") else 64,
+        image_size=config.tile_size,
         batch_size=config.batch_size,
         num_workers=config.num_workers,
         val_split=config.val_split,

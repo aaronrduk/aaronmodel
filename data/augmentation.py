@@ -161,7 +161,7 @@ def get_val_transforms(image_size: int = 512) -> A.Compose:
             "waterbody_line_mask": "mask",
             "waterbody_point_mask": "mask",
             "utility_line_mask": "mask",
-            "utility_poly_mask": "mask",
+            "utility_point_mask": "mask",
             "bridge_mask": "mask",
             "railway_mask": "mask",
             "roof_type_mask": "mask",

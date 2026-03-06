@@ -26,7 +26,7 @@ Dataset structure expected:
 
 import logging
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import geopandas as gpd
 import numpy as np
@@ -72,11 +72,11 @@ SHAPEFILE_TASKS = [
         ["waterbody_point", "water_body_point", "well"],
         "waterbody_point",
     ),
-    # utility_poly BEFORE utility_line to avoid keyword cross-match
+    # utility_point (previously utility_poly)
     (
         ["Utility_poly_1*.shp", "Utility_Poly*.shp"],
-        ["utility_poly", "utility_area", "transformer", "tank"],
-        "utility_poly",
+        ["utility_poly", "utility_area", "utility_point", "transformer", "tank"],
+        "utility_point",
     ),
     (
         ["Utility_1*.shp", "Utility.shp", "Utility_Line*.shp"],
@@ -111,13 +111,17 @@ class SvamitvaDataset(Dataset):
 
     def __init__(
         self,
-        root_dir: Path,
+        root_dirs: Union[Path, List[Path]],
         image_size: int = TILE_SIZE,
         transform: Optional[Callable] = None,
         mode: str = "train",
         tasks: Optional[List[str]] = None,
     ):
-        self.root_dir = Path(root_dir)
+        if isinstance(root_dirs, (str, Path)):
+            self.root_dirs = [Path(root_dirs)]
+        else:
+            self.root_dirs = [Path(d) for d in root_dirs]
+
         self.image_size = image_size
         self.transform = transform
         self.mode = mode
@@ -128,7 +132,9 @@ class SvamitvaDataset(Dataset):
         self._supervised_mask_keys = self._build_supervised_mask_keys()
 
         self.samples = self._scan_dataset()
-        logger.info(f"[{mode}] dataset ready: {len(self.samples)} tile samples")
+        logger.info(
+            f"[{mode}] dataset ready: {len(self.samples)} tile samples from {len(self.root_dirs)} roots"
+        )
 
     def _build_supervised_mask_keys(self) -> List[str]:
         if self.tasks is None:
@@ -279,10 +285,24 @@ class SvamitvaDataset(Dataset):
 
     def _scan_dataset(self) -> List[Dict]:
         samples = []
-        candidate_dirs = sorted([d for d in self.root_dir.iterdir() if d.is_dir()])
+
+        # Collect all map directories (either children of roots or roots themselves)
+        candidate_dirs = []
+        for root in self.root_dirs:
+            if not root.is_dir():
+                logger.warning(f"Root directory not found: {root}")
+                continue
+
+            # If root contains a .tif, it's a map directory itself
+            has_tif = any(root.glob("*.tif")) or any(root.glob("*.TIF"))
+            if has_tif:
+                candidate_dirs.append(root)
+            else:
+                # Otherwise, check children
+                candidate_dirs.extend([d for d in root.iterdir() if d.is_dir()])
 
         if not candidate_dirs:
-            raise ValueError(f"No subdirectories found in {self.root_dir}")
+            raise ValueError(f"No map directories found in {self.root_dirs}")
 
         for map_dir in candidate_dirs:
             # ── Find orthophoto ──────────────────────────────────────────────
@@ -356,7 +376,7 @@ class SvamitvaDataset(Dataset):
 
         if not samples:
             raise ValueError(
-                f"No tiles found in {self.root_dir}. "
+                f"No tiles found in {self.root_dirs}. "
                 "Each MAP folder needs a .tif + at least one .shp."
             )
 
@@ -448,7 +468,7 @@ class SvamitvaDataset(Dataset):
 
         # ── Build masks ───────────────────────────────────────────────────────
         output_shape = (TILE_SIZE, TILE_SIZE)
-        masks: Dict[str, np.ndarray] = {}
+        masks: Dict[str, np.ndarray] = {"valid_mask": valid_mask}
 
         for _, _, task_key in SHAPEFILE_TASKS:
             # 🎯 Filter: Only generate mask if task is in requested self.tasks
@@ -511,8 +531,9 @@ class SvamitvaDataset(Dataset):
             for k, v in masks.items():
                 result[k] = torch.from_numpy(v).long()
 
-        # Add valid_mask to result
-        result["valid_mask"] = torch.from_numpy(valid_mask).float()
+        # result["valid_mask"] comes from transformed successfully if self.transform exists
+        if not self.transform:
+            result["valid_mask"] = torch.from_numpy(valid_mask).float()
 
         result["metadata"] = {
             "map_name": sample["map_name"],
@@ -527,7 +548,7 @@ class SvamitvaDataset(Dataset):
 
 
 def create_dataloaders(
-    train_dir: Path,
+    train_dirs: List[Path],
     val_dir: Optional[Path] = None,
     batch_size: int = 8,
     num_workers: int = 0,
@@ -539,12 +560,9 @@ def create_dataloaders(
 
     If val_dir is provided, creates a separate validation dataset.
     Otherwise, splits training data by val_split fraction.
-
-    num_workers defaults to 0 — required for Jupyter / shared-server
-    environments where forked workers cannot be tested.
     """
     train_ds = SvamitvaDataset(
-        train_dir, image_size, get_train_transforms(image_size), "train"
+        train_dirs, image_size, get_train_transforms(image_size), "train"
     )
 
     if val_dir is not None:
