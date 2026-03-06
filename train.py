@@ -182,7 +182,7 @@ def main():
         resume_path = Path(args.resume)
         if resume_path.exists():
             logger.info(f"Resuming from {resume_path}")
-            checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
+            checkpoint = torch.load(resume_path, map_location="cpu", weights_only=True)
             model.load_state_dict(checkpoint["model_state_dict"])
         else:
             logger.warning(f"Checkpoint not found: {resume_path}")

@@ -313,7 +313,7 @@ def load_model_for_inference(
     checkpoint = torch.load(
         checkpoint_path,
         map_location="cpu",
-        weights_only=False,
+        weights_only=True,
     )
 
     # Integrity check

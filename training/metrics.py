@@ -141,11 +141,11 @@ class RoofTypeMetrics:
         return self.correct / (self.total + 1e-8)
 
     def compute(self) -> Dict[str, float]:
-        result = {"roof_type_accuracy": self.accuracy}
+        result = {"roof_type_accuracy": float(self.accuracy)}
         classes = ["Background", "RCC", "Tiled", "Tin", "Others"]
         for c in range(self.num_classes):
             acc = self.per_class_correct[c] / (self.per_class_total[c] + 1e-8)
-            result[f"roof_{classes[c]}_acc"] = acc
+            result[f"roof_{classes[c]}_acc"] = float(acc)
         return result
 
 
@@ -214,7 +214,7 @@ class MetricsTracker:
         result.update(self.roof_metrics.compute())
 
         # Aggregates
-        result["avg_iou"] = np.mean(ious)
-        result["avg_dice"] = np.mean(dices)
+        result["avg_iou"] = float(np.mean(ious)) if ious else 0.0
+        result["avg_dice"] = float(np.mean(dices)) if dices else 0.0
 
         return result
