@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Deep Learning / Data (CRITICAL)
+checkpoints/
+outputs/
+data/
+tmp/
+*.pt
+*.pth
+*.h5
+*.weights
+
+# GIS / Spatial
+*.shp.xml
+*.cpg
+*.shx
+*.dbf
+*.prj
+# Ignoring raw data mostly, but keeping config if needed.
+# Typically we don't push large GeoTIFFs
+*.tif
+*.tiff
+*.jpg
+*.png
+
+# IDE / System
+.DS_Store
+.idea/
+.vscode/
+.gemini/
+brain/
+*.log
+
+# Streamlit
+.streamlit/
+static/
