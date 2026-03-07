@@ -462,9 +462,9 @@ class SvamitvaDataset(Dataset):
 
         # ── Valid Data Mask (NoData skipping) ─────────────────────────────────
         # User requested skipping non-value pixels. We define 'valid' as pixels
-        # where at least one channel has a non-zero value (or all three for strictness).
-        # Standard drone imagery uses (0,0,0) for NoData.
-        valid_mask = (image.sum(axis=-1) > 0).astype(np.uint8)
+        # where at least one channel has a non-zero value.
+        # This mask is used to zero-out the loss in black/empty areas.
+        valid_mask = (image.sum(axis=-1) > 0.01).astype(np.uint8)
 
         # ── Build masks ───────────────────────────────────────────────────────
         output_shape = (TILE_SIZE, TILE_SIZE)

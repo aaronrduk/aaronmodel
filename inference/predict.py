@@ -280,6 +280,12 @@ class TiledPredictor:
                         result[key] = 1.0 / (1.0 + np.exp(-logits))
         return result
 
+    def _is_nodata_tile(self, tile: np.ndarray, threshold: float = 0.99) -> bool:
+        """Check if a tile is mostly NoData (0,0,0)."""
+        # Sum of channels == 0 for NoData
+        mask = np.sum(tile, axis=-1) == 0
+        return mask.mean() > threshold
+
     def predict_image(
         self,
         image: np.ndarray,
@@ -327,6 +333,12 @@ class TiledPredictor:
                     )
                     padded[:h, :w] = tile
                     tile = padded
+
+                # ── NoData Skipping ──────────────────────────────────────────
+                # If the tile is > 99% NoData (black), skip it
+                if self._is_nodata_tile(tile):
+                    weight_map[y : y + h, x : x + w] += self.blend_kernel[:h, :w]
+                    continue
 
                 preds = self._predict_single_tile(tile)
                 blend = self.blend_kernel[:h, :w]

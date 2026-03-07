@@ -14,3 +14,4 @@ matplotlib
 albumentations
 scipy
 opencv-python
+scikit-learn
