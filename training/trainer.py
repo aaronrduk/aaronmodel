@@ -101,26 +101,8 @@ class WarmupCosineScheduler:
         for pg, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
             pg["lr"] = max(base_lr * scale, self.lr_min)
 
-    def save_latest(
-        self,
-        model: nn.Module,
-        optimizer: torch.optim.Optimizer,
-        epoch: int,
-        metrics: Dict[str, float],
-    ):
-        """Save a 'best_latest.pt' checkpoint for crash recovery."""
-        state = {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "metrics": metrics,
-        }
-        path = self.save_dir / "best_latest.pt"
-        torch.save(state, path)
-        logger.debug(f"Saved latest checkpoint to {path}")
 
-
-# ── Trainer ──────────────────────────────────────────────────────────────────
+# ── Checkpoint Manager ────────────────────────────────────────────────────────
 
 
 class CheckpointManager:
@@ -143,6 +125,24 @@ class CheckpointManager:
         self.best_epoch = 0
         self.epochs_no_improve = 0
         self.top_k: list = []  # (score, path) sorted ascending
+
+    def save_latest(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        epoch: int,
+        metrics: Dict[str, float],
+    ):
+        """Save a 'best_latest.pt' checkpoint for crash recovery."""
+        state = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "metrics": metrics,
+        }
+        path = self.save_dir / "best_latest.pt"
+        torch.save(state, path)
+        logger.debug(f"Saved latest checkpoint to {path}")
 
     def save(
         self,
