@@ -224,7 +224,8 @@ class TiledPredictor:
                 logits = self.model.roof_model(p_tensor)
                 preds = torch.argmax(logits, dim=1)  # (1, 224, 224)
                 # Take the majority class in the patch as the roof type
-                class_id = torch.mode(preds.view(-1)).values.item()
+                # (Note: .cpu() is required as torch.mode is not yet fully implemented for MPS)
+                class_id = torch.mode(preds.view(-1).cpu()).values.item()
                 roof_output[labels == prop.label] = int(class_id)
         return roof_output
 
