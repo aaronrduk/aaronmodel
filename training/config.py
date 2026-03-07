@@ -14,8 +14,7 @@ class TrainingConfig:
     # ── Paths ────────────────────────────────────────────────────────────────
     train_dirs: List[str] = field(
         default_factory=lambda: [
-            "data/MAP1",
-            "data/MAP2",
+            "/Users/aaronr/Desktop/DATA/MAP2",
         ]
     )
     val_dir: Optional[str] = None

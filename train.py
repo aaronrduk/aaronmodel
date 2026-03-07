@@ -51,9 +51,7 @@ def download_sam2_checkpoint(dest: Path) -> Path:
         import urllib.request
 
         urllib.request.urlretrieve(SAM2_URL, str(dest))
-        logger.info(
-            f"Download complete: {dest} ({dest.stat().st_size / 1e6:.0f} MB)"
-        )
+        logger.info(f"Download complete: {dest} ({dest.stat().st_size / 1e6:.0f} MB)")
     except Exception as e:
         logger.error(f"Failed to download SAM2 checkpoint: {e}")
         logger.info("Training will proceed without pretrained weights")
@@ -69,12 +67,10 @@ def parse_args():
     p.add_argument(
         "--train_dirs",
         nargs="+",
-        default=["/Users/aaronr/Desktop/DATA/MAP1", "/Users/aaronr/Desktop/DATA/MAP2"],
+        default=["/Users/aaronr/Desktop/DATA/MAP2"],
         help="Directories containing MAP*.tif + shapefiles",
     )
-    p.add_argument(
-        "--val_dir", default=None, help="Separate validation directory"
-    )
+    p.add_argument("--val_dir", default=None, help="Separate validation directory")
 
     # Training
     p.add_argument("--epochs", type=int, default=100)
@@ -102,9 +98,7 @@ def parse_args():
     )
     p.add_argument("--name", default="baseline", help="Experiment name")
     p.add_argument("--force_cpu", action="store_true")
-    p.add_argument(
-        "--quick_test", action="store_true", help="3-epoch smoke test"
-    )
+    p.add_argument("--quick_test", action="store_true", help="3-epoch smoke test")
     p.add_argument("--wandb", action="store_true")
 
     return p.parse_args()
@@ -192,9 +186,7 @@ def main():
         resume_path = Path(args.resume)
         if resume_path.exists():
             logger.info(f"Resuming from {resume_path}")
-            checkpoint = torch.load(
-                resume_path, map_location="cpu"
-            )
+            checkpoint = torch.load(resume_path, map_location="cpu")
             model.load_state_dict(checkpoint["model_state_dict"])
         else:
             logger.warning(f"Checkpoint not found: {resume_path}")
