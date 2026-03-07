@@ -222,7 +222,10 @@ class TiledPredictor:
             ) / torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(self.device)
             with torch.no_grad():
                 logits = self.model.roof_model(p_tensor)
-                roof_output[labels == prop.label] = torch.argmax(logits, dim=1).item()
+                preds = torch.argmax(logits, dim=1)  # (1, 224, 224)
+                # Take the majority class in the patch as the roof type
+                class_id = torch.mode(preds.view(-1)).values.item()
+                roof_output[labels == prop.label] = int(class_id)
         return roof_output
 
 
