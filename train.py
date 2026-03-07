@@ -67,7 +67,7 @@ def parse_args():
     p.add_argument(
         "--train_dirs",
         nargs="+",
-        default=["/Users/aaronr/Desktop/DATA/MAP2"],
+        default=["/Users/aaronr/Desktop/DATA/MAP1", "/Users/aaronr/Desktop/DATA/MAP2"],
         help="Directories containing MAP*.tif + shapefiles",
     )
     p.add_argument("--val_dir", default=None, help="Separate validation directory")
