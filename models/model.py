@@ -1,202 +1,240 @@
 """
-Ensemble SVAMITVA Model — Specialized SOTA Architectures.
+Unified SVAMITVA segmentation model (SAM2 encoder + multi-head decoder).
 
-This module implements the multi-model ensemble requested for maximum accuracy (>=95% IoU).
-It routes different geospatial features to specialized SOTA backbones:
-- Buildings & Water: DeepLabV3+
-- Roads: D-LinkNet
-- Utilities: U-Net++
-- Railway: HRNet
-- Point Features: YOLOv8 (Integrated via inference)
+This model predicts all raster outputs directly:
+- building_mask, roof_type_mask
+- road_mask, road_centerline_mask
+- waterbody_mask, waterbody_line_mask, waterbody_point_mask
+- utility_line_mask, utility_point_mask
+- bridge_mask, railway_mask
+
+YOLO-based point detections are integrated at inference-time in `inference/predict.py`
+and fused with point masks.
 """
 
 import logging
+from pathlib import Path
 from typing import Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-try:
-    import segmentation_models_pytorch as smp
-except ImportError:
-    smp = None
+from .sam2_encoder import SAM2Encoder
+from .decoder import FPNDecoder
+from .heads import create_all_heads
 
 logger = logging.getLogger(__name__)
 
-
-class DLinkBlock(nn.Module):
-    """Dilated convolution block for D-LinkNet."""
-
-    def __init__(self, channels):
-        super(DLinkBlock, self).__init__()
-        self.d1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, dilation=1)
-        self.d2 = nn.Conv2d(channels, channels, kernel_size=3, padding=2, dilation=2)
-        self.d4 = nn.Conv2d(channels, channels, kernel_size=3, padding=4, dilation=4)
-        self.d8 = nn.Conv2d(channels, channels, kernel_size=3, padding=8, dilation=8)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        d1 = self.relu(self.d1(x))
-        d2 = self.relu(self.d2(x))
-        d4 = self.relu(self.d4(x))
-        d8 = self.relu(self.d8(x))
-        return x + d1 + d2 + d4 + d8
-
-
-class DLinkNet(nn.Module):
-    """
-    Simplified D-LinkNet implementation for roads.
-    Uses a LinkNet-style encoder/decoder with central dilated blocks.
-    """
-
-    def __init__(self, num_classes=1, pretrained=True):
-        super().__init__()
-        if smp is None:
-            raise ImportError("segmentation_models_pytorch is required for DLinkNet")
-        self.base = smp.LinkNet(
-            encoder_name="resnet34",
-            encoder_weights="imagenet" if pretrained else None,
-            in_channels=3,
-            classes=num_classes,
-        )
-
-    def forward(self, x):
-        return self.base(x)
+DEFAULT_SAM2_CKPT_CANDIDATES = [
+    Path("checkpoints/sam2.1_hiera_base_plus.pt"),
+    Path("checkpoints/sam2_hiera_base_plus.pt"),
+]
 
 
 class EnsembleSvamitvaModel(nn.Module):
     """
-    Orchestrates specialized SOTA models for each feature type.
+    Unified Production Architecture for SVAMITVA Feature Extraction.
+
+    Integrates:
+    - SAM2 Hiera Backbone (Multi-scale features)
+    - FPN Decoder with CBAM Attention
+    - Specialized Task Heads (Building, Line, Detection)
     """
 
     def __init__(
         self,
         num_roof_classes: int = 5,
         pretrained: bool = True,
+        checkpoint_path: str = "",
+        model_cfg: str = "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        dropout: float = 0.1,
     ):
         super().__init__()
-        if smp is None:
-            logger.error("segmentation_models_pytorch not installed!")
 
-        # 1. Buildings (DeepLabV3+)
-        self.buildings_model = smp.DeepLabV3Plus(
-            encoder_name="resnet101",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=1,
+        resolved_ckpt = self._resolve_sam2_checkpoint(checkpoint_path, pretrained)
+
+        # 1. Backbone (SAM2)
+        self.encoder = SAM2Encoder(
+            checkpoint_path=resolved_ckpt, model_cfg=model_cfg, freeze=False
         )
 
-        # 2. Roads (D-LinkNet style Linknet)
-        self.roads_model = smp.Linknet(
-            encoder_name="resnet34",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=1,
+        # 2. Decoder (FPN + CBAM)
+        self.decoder = FPNDecoder(
+            in_channels=self.encoder.feature_channels, out_channels=256
         )
 
-        # 3. Water (DeepLabV3+)
-        self.water_model = smp.DeepLabV3Plus(
-            encoder_name="resnet50",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=1,
+        # 3. Heads (11 tasks)
+        self.heads = create_all_heads(
+            in_channels=256, num_roof_classes=num_roof_classes, dropout=dropout
         )
 
-        # 4. Utilities (U-Net++)
-        self.utilities_model = smp.UnetPlusPlus(
-            encoder_name="resnet34",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=1,
-        )
+    def _resolve_sam2_checkpoint(self, checkpoint_path: str, pretrained: bool) -> str:
+        """Resolve which SAM2 checkpoint should initialize the encoder."""
+        if checkpoint_path:
+            p = Path(checkpoint_path)
+            if p.exists():
+                return str(p)
+            logger.warning("Specified SAM2 checkpoint not found: %s", p)
 
-        # 5. Railway (ResNet101 Unet)
-        self.railway_model = smp.Unet(
-            encoder_name="resnet101",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=1,
-        )
+        if pretrained:
+            for cand in DEFAULT_SAM2_CKPT_CANDIDATES:
+                if cand.exists():
+                    logger.info("Using SAM2 checkpoint: %s", cand)
+                    return str(cand)
+            logger.warning(
+                "No SAM2 checkpoint file found in default locations. "
+                "Encoder will initialize without local checkpoint."
+            )
 
-        # 6. Roof Type (EfficientNet-B0 backbone)
-        self.roof_model = smp.Unet(
-            encoder_name="efficientnet-b0",
-            encoder_weights="imagenet" if pretrained else None,
-            classes=num_roof_classes,
-        )
+        return ""
 
     def forward(self, x: torch.Tensor, task: str = "all") -> Dict[str, torch.Tensor]:
-        """Runs the ensemble backbones sequentially (inference) or parallel (training)."""
+        """
+        Forward pass through the unified pipeline.
+
+        Args:
+            x: Input image tensor (B, 3, H, W)
+            task: Task filter (e.g., "buildings", "roads", or "all")
+        """
+        # Feature extraction
+        backbone_feats = self.encoder(x)
+
+        # Multi-scale fusion
+        fused_feat = self.decoder(backbone_feats)
+        target_size = x.shape[2:]
+
         outputs = {}
-        if task in ["all", "buildings"]:
-            outputs["building_mask"] = self.buildings_model(x)
-        if task in ["all", "roads"]:
-            outputs["road_mask"] = self.roads_model(x)
-            outputs["road_centerline_mask"] = self.roads_model(x)
-        if task in ["all", "water"]:
-            outputs["waterbody_mask"] = self.water_model(x)
-            outputs["waterbody_line_mask"] = self.water_model(x)
-        if task in ["all", "utilities"]:
-            outputs["utility_line_mask"] = self.utilities_model(x)
-        if task in ["all", "railway"]:
-            outputs["railway_mask"] = self.railway_model(x)
-        if task in ["all", "roof"]:
-            outputs["roof_type_mask"] = self.roof_model(x)
+
+        task_norm = task.lower().strip()
+        run_all = task_norm in {"all", "*", "full"}
+
+        # Buildings + roof
+        if run_all or task_norm in {
+            "buildings",
+            "building",
+            "building_mask",
+            "roof",
+            "roof_type",
+            "roof_type_mask",
+        }:
+            mask, roof = self.heads["building"](fused_feat)
+            outputs["building_mask"] = F.interpolate(
+                mask, size=target_size, mode="bilinear", align_corners=False
+            )
+            outputs["roof_type_mask"] = F.interpolate(
+                roof, size=target_size, mode="bilinear", align_corners=False
+            )
+
+        # Roads
+        if run_all or task_norm in {"roads", "road", "road_mask"}:
+            outputs["road_mask"] = F.interpolate(
+                self.heads["road"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        if run_all or task_norm in {
+            "roads",
+            "road",
+            "road_centerline",
+            "road_centerline_mask",
+        }:
+            outputs["road_centerline_mask"] = F.interpolate(
+                self.heads["road_centerline"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # Water
+        if run_all or task_norm in {"water", "waterbody", "waterbody_mask"}:
+            outputs["waterbody_mask"] = F.interpolate(
+                self.heads["waterbody"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        if run_all or task_norm in {
+            "water",
+            "waterbody",
+            "waterbody_line",
+            "waterbody_line_mask",
+        }:
+            outputs["waterbody_line_mask"] = F.interpolate(
+                self.heads["waterbody_line"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        if run_all or task_norm in {
+            "water",
+            "waterbody",
+            "waterbody_point",
+            "waterbody_point_mask",
+        }:
+            outputs["waterbody_point_mask"] = F.interpolate(
+                self.heads["waterbody_point"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # Utilities
+        if run_all or task_norm in {"utilities", "utility", "utility_line_mask"}:
+            outputs["utility_line_mask"] = F.interpolate(
+                self.heads["utility_line"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        if run_all or task_norm in {
+            "utilities",
+            "utility",
+            "utility_point",
+            "utility_point_mask",
+        }:
+            outputs["utility_point_mask"] = F.interpolate(
+                self.heads["utility_point"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # Infrastructure
+        if run_all or task_norm in {"railway", "railway_mask"}:
+            outputs["railway_mask"] = F.interpolate(
+                self.heads["railway"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        if run_all or task_norm in {"bridge", "bridge_mask"}:
+            outputs["bridge_mask"] = F.interpolate(
+                self.heads["bridge"](fused_feat),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+
         return outputs
 
     def freeze_backbone(self):
-        """Freeze all encoders for head-only training."""
-        for m in [
-            self.buildings_model,
-            self.roads_model,
-            self.water_model,
-            self.utilities_model,
-            self.railway_model,
-            self.roof_model,
-        ]:
-            if hasattr(m, "encoder"):
-                for param in m.encoder.parameters():
-                    param.requires_grad = False
-        logger.info("Ensemble backbones FROZEN.")
+        """Freeze SAM2 encoder for head-only training."""
+        self.encoder.freeze()
 
     def unfreeze_backbone(self):
-        """Unfreeze all encoders for full fine-tuning."""
-        for m in [
-            self.buildings_model,
-            self.roads_model,
-            self.water_model,
-            self.utilities_model,
-            self.railway_model,
-            self.roof_model,
-        ]:
-            if hasattr(m, "encoder"):
-                for param in m.encoder.parameters():
-                    param.requires_grad = True
-        logger.info("Ensemble backbones UNFROZEN.")
+        """Unfreeze SAM2 encoder for full fine-tuning."""
+        self.encoder.unfreeze()
 
     def get_param_groups(self, base_lr: float = 1e-4) -> list:
-        """Categorize parameters for LR scaling (optional but useful)."""
-        heads = []
-        backbones = []
-        for m in [
-            self.buildings_model,
-            self.roads_model,
-            self.water_model,
-            self.utilities_model,
-            self.railway_model,
-            self.roof_model,
-        ]:
-            if hasattr(m, "encoder"):
-                backbones.extend(list(m.encoder.parameters()))
-                # Everything else is considered 'head' (decoder, segmentation head, etc)
-                # This is a bit simplistic but works for smp models
-                head_params = [
-                    p
-                    for p in m.parameters()
-                    if id(p) not in [id(bp) for bp in backbones]
-                ]
-                heads.extend(head_params)
-            else:
-                heads.extend(list(m.parameters()))
+        """Categorize parameters for LR scaling."""
+        backbone_params = list(self.encoder.parameters())
+        head_params = list(self.decoder.parameters()) + list(self.heads.parameters())
 
         return [
-            {"params": heads, "lr": base_lr},
-            {"params": backbones, "lr": base_lr * 0.1},  # Slower backbone learning rate
+            {"params": head_params, "lr": base_lr},
+            {"params": backbone_params, "lr": base_lr * 0.1},  # Slower backbone LR
         ]
 
 

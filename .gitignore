@@ -1,10 +1,14 @@
 # Python
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 *.py[cod]
 *$py.class
 *.so
 .Python
 env/
+.venv/
 build/
 develop-eggs/
 dist/

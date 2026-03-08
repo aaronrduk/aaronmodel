@@ -44,8 +44,19 @@ def parse_args():
     p.add_argument("--tile_size", type=int, default=512)
     p.add_argument("--num_workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument(
         "--freeze_epochs", type=int, default=5, help="Epochs to freeze heads"
+    )
+    p.add_argument(
+        "--sam2_checkpoint",
+        default="checkpoints/sam2.1_hiera_base_plus.pt",
+        help="Path to SAM2 backbone checkpoint",
+    )
+    p.add_argument(
+        "--sam2_model_cfg",
+        default="configs/sam2.1/sam2.1_hiera_b+.yaml",
+        help="SAM2 model config path/name",
     )
 
     # Misc
@@ -95,6 +106,9 @@ def main():
             checkpoint_dir=args.checkpoint_dir,
             force_cpu=args.force_cpu,
             experiment_name=args.name,
+            dropout=args.dropout,
+            sam2_checkpoint=args.sam2_checkpoint,
+            sam2_model_cfg=args.sam2_model_cfg,
         )
 
     # Data
@@ -113,17 +127,25 @@ def main():
     model = EnsembleSvamitvaModel(
         num_roof_classes=config.num_roof_classes,
         pretrained=config.pretrained,
+        checkpoint_path=(
+            str(config.sam2_checkpoint) if config.sam2_checkpoint is not None else ""
+        ),
+        model_cfg=config.sam2_model_cfg,
+        dropout=config.dropout,
     )
 
     # Resume
+    start_epoch = 1
     if args.resume:
         resume_path = Path(args.resume)
         if resume_path.exists():
             logger.info(f"Resuming from {resume_path}")
             checkpoint = torch.load(resume_path, map_location="cpu")
             model.load_state_dict(
-                checkpoint.get("model_state_dict", checkpoint), strict=False
+                checkpoint.get("model_state_dict", checkpoint), strict=True
             )
+            # Recover epoch
+            start_epoch = checkpoint.get("epoch", 0) + 1
         else:
             logger.warning(f"Checkpoint not found: {resume_path}")
 
@@ -131,10 +153,27 @@ def main():
     loss_fn = MultiTaskLoss()
 
     # Train
-    trainer = Trainer(model, train_loader, val_loader, loss_fn, config)
+    trainer = Trainer(
+        model, train_loader, val_loader, loss_fn, config, start_epoch=start_epoch
+    )
+
+    # Resume optimizer/scheduler if available
+    if args.resume and "checkpoint" in locals():
+        if "optimizer_state_dict" in checkpoint:
+            trainer.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            logger.info("  → Optimizer state restored")
+        if "scheduler_state_dict" in checkpoint and trainer.scheduler is not None:
+            trainer.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            logger.info("  → Scheduler state restored")
+
     trainer.fit()
 
-    logger.info("Project Finalization (V3) — Training Success! 🎉")
+    if getattr(trainer, "was_interrupted", False):
+        logger.warning(
+            "Training stopped before completion. Latest checkpoint was saved for resume."
+        )
+    else:
+        logger.info("Project Finalization (V3) — Training Success! 🎉")
 
 
 if __name__ == "__main__":

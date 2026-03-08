@@ -33,11 +33,17 @@ st.markdown(
 # ── Metadata ─────────────────────────────────────────────────────────
 
 FEATURES = {
-    "building_mask": ("🏘️ Buildings (DeepLabV3+)", (255, 100, 50)),
-    "road_mask": ("🛣️ Roads (D-LinkNet)", (255, 255, 100)),
-    "waterbody_mask": ("💧 Waterbodies (DeepLabV3+)", (50, 150, 255)),
-    "utility_line_mask": ("⚡ Utility Lines (U-Net++)", (50, 220, 100)),
-    "railway_mask": ("🚂 Railways (HRNet)", (180, 80, 255)),
+    "building_mask": ("🏘️ Buildings (SAM2+Dual-Head)", (255, 100, 50)),
+    "roof_type_mask": ("🏠 Roof Types (RCC/Tiled/Tin/Others)", (255, 0, 180)),
+    "road_mask": ("🛣️ Roads (SAM2+Link-Head)", (255, 255, 100)),
+    "road_centerline_mask": ("🧭 Road Centre Line", (255, 220, 0)),
+    "waterbody_mask": ("💧 Waterbodies (SAM2+Binary-Head)", (50, 150, 255)),
+    "waterbody_line_mask": ("🌊 Water Body Line", (0, 210, 255)),
+    "waterbody_point_mask": ("🕳️ Wells (YOLOv8 + SAM2)", (0, 255, 255)),
+    "utility_line_mask": ("⚡ Utility Lines (SAM2+Line-Head)", (50, 220, 100)),
+    "utility_point_mask": ("🔌 Utility Points (YOLOv8 + SAM2)", (0, 255, 120)),
+    "bridge_mask": ("🌉 Bridge", (255, 140, 0)),
+    "railway_mask": ("🚂 Railways (SAM2+Line-Head)", (180, 80, 255)),
 }
 
 DEVICE = torch.device(
@@ -62,8 +68,11 @@ def main():
             "Ensemble Checkpoint (.pt)", "checkpoints/ensemble_v3.pt"
         )
         yolo_path = st.text_input("YOLOv8 Weights (.pt)", "checkpoints/yolov8s.pt")
-        for k, v in FEATURES.items():
-            st.checkbox(v[0], value=True)
+        selected_masks = []
+        for key, meta in FEATURES.items():
+            enabled = st.checkbox(meta[0], value=True, key=f"feature_{key}")
+            if enabled:
+                selected_masks.append(key)
         threshold = st.slider("Detection Threshold", 0.1, 0.9, 0.5)
         alpha = st.slider("Overlay Opacity", 0.1, 0.8, 0.4)
 
@@ -84,7 +93,10 @@ def main():
                     device=DEVICE,
                 )
                 predictor.threshold = threshold
-                st.session_state.results = predictor.predict_tif(tif_path)
+                st.session_state.results = predictor.predict_tif(
+                    tif_path,
+                    selected_masks=selected_masks,
+                )
                 st.session_state.tif_path = tif_path
                 st.success("Extraction Complete!")
 
@@ -115,7 +127,7 @@ def main():
             for key, (name, color) in FEATURES.items():
                 if key in results:
                     m_small = cv2.resize(results[key], (thumb.shape[1], thumb.shape[0]))
-                    binary = m_small > threshold
+                    binary = m_small > 0 if key == "roof_type_mask" else m_small > threshold
                     for c in range(3):
                         overlay[binary, c] = (
                             overlay[binary, c] * (1 - alpha) + color[c] * alpha

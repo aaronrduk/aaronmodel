@@ -28,6 +28,26 @@ High-resolution geospatial feature extraction from drone orthophotos, designed f
 
 ---
 
+## 🧭 Recommended Global Strategy
+
+For best practical accuracy and stability on drone imagery, use a **hybrid pipeline**:
+
+1. **SAM2 for strong segmentation priors and auto-label bootstrapping**
+2. **Task-specialized models for production heads**
+   - DeepLabV3+ (building, water polygons)
+   - D-LinkNet (roads / centrelines)
+   - U-Net++ (utility linear features)
+   - HRNet (railway continuity)
+3. **YOLOv8 for sparse point objects** (wells, transformers, tanks)
+4. **Roof-type classification head** for RCC/Tiled/Tin/Others
+
+The current codebase supports this in practice via:
+- SAM2-based multi-head segmentation model
+- YOLOv8 fusion for point masks
+- Roof-type raster + GIS export
+
+---
+
 ## 📦 Installation
 
 1. **Clone the repository**:
@@ -74,6 +94,24 @@ data/
     ├── Road.shp           # Road annotations
     └── ...                # Other feature shapefiles
 ```
+
+---
+
+## 🎯 Output Keys
+
+| Output Key | Target Feature | Geometry |
+| :--- | :--- | :--- |
+| `building_mask` | Built-up Area | Polygon |
+| `roof_type_mask` | Roof Classification (RCC/Tiled/Tin/Others) | Polygon |
+| `road_mask` | Road | Polygon |
+| `road_centerline_mask` | Road Centre Line | Line |
+| `waterbody_mask` | Water Body | Polygon |
+| `waterbody_line_mask` | Water Body Line | Line |
+| `waterbody_point_mask` | Waterbody Point (Wells) | Point |
+| `utility_line_mask` | Utility (Pipeline/Wires) | Line |
+| `utility_point_mask` | Utility Point (Transformers/Tanks) | Point |
+| `bridge_mask` | Bridge | Polygon |
+| `railway_mask` | Railway | Line |
 
 ---
 

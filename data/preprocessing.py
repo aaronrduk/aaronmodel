@@ -260,32 +260,33 @@ class ShapefileAnnotationParser:
         else:
             logger.info(f"  [{feature_type}] mask positive pixels: {n_pos}")
 
-        # ★ KNN Refinement: Clean up boundaries based on local pixel similarity
-        # We only refine if we have a significant number of positive pixels but not too many (for speed)
+        # Optional neighborhood refinement to reduce rasterization noise.
+        # Run only when mask is neither empty nor nearly full (speed guard).
         if 0 < n_pos < (output_shape[0] * output_shape[1] * 0.9):
-            mask = self.refine_mask_knn(mask, output_shape)
+            mask = self.refine_mask_knn(mask, k=5)
 
         return mask
 
-    def refine_mask_knn(
-        self, mask: np.ndarray, shape: Tuple[int, int], k: int = 5
-    ) -> np.ndarray:
+    def refine_mask_knn(self, mask: np.ndarray, k: int = 5) -> np.ndarray:
         """
-        Refine a binary mask using a KNN-like smoothing strategy.
-        Uses a local neighborhood vote to remove salt-and-pepper noise
-        and smooth jagged edges from rasterization.
+        Refine a binary mask with local majority voting.
+
+        The 'k' argument controls neighborhood size approximately:
+        window_size = ceil(sqrt(k)), promoted to an odd value.
         """
         try:
             from scipy.ndimage import generic_filter
 
-            def knn_vote(window):
-                # Count neighbors
-                pos_count = np.sum(window == 1)
-                # If more than half of the 'k' neighbors agree, set to that value
-                return 1 if pos_count > (len(window) / 2) else 0
+            window_size = int(np.ceil(np.sqrt(max(1, k))))
+            if window_size % 2 == 0:
+                window_size += 1
+            window_size = max(3, window_size)
 
-            # Use a 3x3 or 5x5 window for local neighborhood
-            refined = generic_filter(mask, knn_vote, size=3)
+            def knn_vote(window: np.ndarray) -> int:
+                pos_count = np.sum(window == 1)
+                return 1 if pos_count > (len(window) / 2.0) else 0
+
+            refined = generic_filter(mask, knn_vote, size=window_size)
             return refined.astype(np.uint8)
         except Exception as e:
             logger.warning(f"KNN refinement failed: {e}")

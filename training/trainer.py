@@ -130,6 +130,7 @@ class CheckpointManager:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
+        scheduler: Any,
         epoch: int,
         metrics: Dict[str, float],
     ):
@@ -138,6 +139,9 @@ class CheckpointManager:
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": (
+                scheduler.state_dict() if scheduler is not None else None
+            ),
             "metrics": metrics,
         }
         path = self.save_dir / "best_latest.pt"
@@ -148,6 +152,7 @@ class CheckpointManager:
         self,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
+        scheduler: Any,
         epoch: int,
         metrics: Dict[str, float],
     ) -> bool:
@@ -158,7 +163,7 @@ class CheckpointManager:
         is_best = score > self.best_score
 
         # Always save latest for crash recovery
-        self.save_latest(model, optimizer, epoch, metrics)
+        self.save_latest(model, optimizer, scheduler, epoch, metrics)
 
         if is_best:
             self.best_score = score
@@ -170,6 +175,9 @@ class CheckpointManager:
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": (
+                    scheduler.state_dict() if scheduler is not None else None
+                ),
                 "metrics": metrics,
                 "best_score": self.best_score,
             }
@@ -209,8 +217,10 @@ class Trainer:
         val_loader: DataLoader,
         loss_fn: nn.Module,
         config: TrainingConfig,
+        start_epoch: int = 1,
     ):
         self.config = config
+        self.start_epoch = start_epoch
         self.device = get_device(config)
         logger.info(f"Using device: {self.device}")
 
@@ -260,6 +270,9 @@ class Trainer:
                 config.num_epochs,
                 config.lr_min,
             )
+        self._scheduler_step_per_batch = isinstance(
+            self.scheduler, torch.optim.lr_scheduler.OneCycleLR
+        )
 
         # AMP
         self.use_amp = config.mixed_precision and self.device.type == "cuda"
@@ -299,14 +312,16 @@ class Trainer:
     def fit(self):
         """Run full training loop with detailed logging and TensorBoard visualization."""
         set_seed(self.config.seed)
+        self.was_interrupted = False
         logger.info(
             f"Starting training for {self.config.num_epochs} epochs "
             f"({len(self.train_loader)} train batches, "
             f"{len(self.val_loader)} val batches)"
         )
+        completed_successfully = False
 
         try:
-            for epoch in range(1, self.config.num_epochs + 1):
+            for epoch in range(self.start_epoch, self.config.num_epochs + 1):
                 # ... unfreezing logic ...
                 if epoch == self.config.freeze_backbone_epochs + 1:
                     logger.info(f"Epoch {epoch}: Unfreezing backbone")
@@ -329,7 +344,12 @@ class Trainer:
                 )
 
                 # LR schedule
-                self.scheduler.step()
+                if not self._scheduler_step_per_batch:
+                    if isinstance(self.scheduler, WarmupCosineScheduler):
+                        # WarmupCosineScheduler expects a zero-based epoch index.
+                        self.scheduler.step(epoch - 1)
+                    else:
+                        self.scheduler.step()
                 current_lr = self.optimizer.param_groups[-1]["lr"]
 
                 # Log
@@ -343,7 +363,9 @@ class Trainer:
                 )
 
                 # Save checkpoint (includes best_latest.pt save)
-                self.ckpt_mgr.save(self.model, self.optimizer, epoch, val_metrics)
+                self.ckpt_mgr.save(
+                    self.model, self.optimizer, self.scheduler, epoch, val_metrics
+                )
 
                 # Early stopping
                 if self.config.early_stopping and self.ckpt_mgr.should_stop:
@@ -352,6 +374,7 @@ class Trainer:
                         f"without improvement. Best epoch: {self.ckpt_mgr.best_epoch}"
                     )
                     break
+            completed_successfully = True
 
         except (KeyboardInterrupt, Exception) as e:
             logger.error(f"Training interrupted or crashed: {e}")
@@ -361,15 +384,20 @@ class Trainer:
             current_epoch = epoch if "epoch" in locals() else 0
             metrics = {"epoch_interrupted": True}
             self.ckpt_mgr.save_latest(
-                self.model, self.optimizer, current_epoch, metrics
+                self.model, self.optimizer, self.scheduler, current_epoch, metrics
             )
             if isinstance(e, KeyboardInterrupt):
+                self.was_interrupted = True
                 logger.info("Keyboard interrupt received. Exiting.")
             else:
                 raise e
         finally:
             # Final save if we completed all epochs successfully
-            if "epoch" in locals() and epoch == self.config.num_epochs:
+            if (
+                completed_successfully
+                and "epoch" in locals()
+                and epoch == self.config.num_epochs
+            ):
                 final_path = self.ckpt_mgr.save_dir / "best.pt"
                 torch.save(self.model.state_dict(), final_path)
                 logger.info(
@@ -436,6 +464,9 @@ class Trainer:
                     self.model.parameters(), self.config.gradient_clip
                 )
                 self.optimizer.step()
+
+            if self._scheduler_step_per_batch:
+                self.scheduler.step()
 
             total_loss += loss.item()
             n_batches += 1

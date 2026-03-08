@@ -110,6 +110,10 @@ class SAM2Encoder(nn.Module):
 
     def _extract_features(self, out) -> Dict[str, torch.Tensor]:
         """Parse SAM2 encoder output into named feature maps."""
+        # Handle already-formatted dicts (e.g. from fallback)
+        if isinstance(out, dict) and any(k.startswith("feat_s") for k in out.keys()):
+            return {k: v.contiguous() for k, v in out.items()}
+
         if isinstance(out, dict) and "backbone_fpn" in out:
             # SAM2 returns:
             #   backbone_fpn: [stride4, stride8, stride16]

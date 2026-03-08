@@ -30,6 +30,12 @@ FEATURE_CONFIG: Dict[str, Dict[str, Any]] = {
         "min_area": 15,
         "simplify": 0.5,
     },
+    "roof_type_mask": {
+        "name": "Roof_Types",
+        "type": "Polygon",
+        "min_area": 10,
+        "simplify": 0.5,
+    },
     "road_mask": {"name": "Roads", "type": "Polygon", "min_area": 30, "simplify": 0.8},
     "road_centerline_mask": {
         "name": "Road_Centerlines",
@@ -129,6 +135,39 @@ def _mask_to_geometries(
     return []
 
 
+def _roof_mask_to_records(
+    roof_mask: np.ndarray,
+    transform: rasterio.Affine,
+    min_area: float = 10.0,
+    simplify_tol: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """Convert class-index roof mask to polygon records with roof_type labels."""
+    records: List[Dict[str, Any]] = []
+    for class_id in range(1, min(len(ROOF_LABELS), 5)):
+        binary = (roof_mask == class_id).astype(np.uint8)
+        if binary.sum() == 0:
+            continue
+        shapes = list(rasterio_shapes(binary, mask=binary > 0, transform=transform))
+        for geom_raw, val in shapes:
+            if val <= 0:
+                continue
+            poly = shape(geom_raw)
+            if poly.area < min_area:
+                continue
+            if simplify_tol > 0:
+                poly = poly.simplify(simplify_tol, preserve_topology=True)
+            if poly.is_empty or not poly.is_valid:
+                continue
+            records.append(
+                {
+                    "geometry": poly,
+                    "class": "Roof_Types",
+                    "roof_type": ROOF_LABELS[class_id],
+                }
+            )
+    return records
+
+
 class GISExporter:
     """Production exporter for ensemble V3 predictions."""
 
@@ -156,6 +195,17 @@ class GISExporter:
 
             logger.info(f"Vectorizing {config['name']}...")
             mask = results[key]
+
+            if key == "roof_type_mask":
+                records = _roof_mask_to_records(
+                    mask,
+                    transform,
+                    min_area=float(config.get("min_area", 10)),
+                    simplify_tol=float(config.get("simplify", 0.5)),
+                )
+                if records:
+                    exported_paths[key] = self._write_records(records, config["name"])
+                continue
 
             geoms = _mask_to_geometries(
                 mask,
@@ -193,6 +243,17 @@ class GISExporter:
                 )
 
         return exported_paths
+
+    def _write_records(self, records: List[Dict[str, Any]], layer_name: str) -> Path:
+        """Write pre-built records to a GeoPackage layer."""
+        for i, row in enumerate(records):
+            if "id" not in row:
+                row["id"] = i
+        gdf = gpd.GeoDataFrame(records, crs=self.crs)
+        out_path = self.output_dir / f"{layer_name}.gpkg"
+        gdf.to_file(out_path, driver="GPKG")
+        logger.info(f"  Saved {len(gdf)} features to {out_path.name}")
+        return out_path
 
     def _write_gpkg(
         self,

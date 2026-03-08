@@ -22,6 +22,8 @@ class TrainingConfig:
     pretrained: bool = True
     num_roof_classes: int = 5
     dropout: float = 0.1
+    sam2_checkpoint: Optional[Path] = Path("checkpoints/sam2.1_hiera_base_plus.pt")
+    sam2_model_cfg: str = "configs/sam2.1/sam2.1_hiera_b+.yaml"
 
     # ── Training ─────────────────────────────────────────────────────────────
     batch_size: int = 8
@@ -50,8 +52,13 @@ class TrainingConfig:
         default_factory=lambda: {
             "building": 1.0,
             "road": 1.0,
+            "road_centerline": 1.1,
             "waterbody": 1.0,
+            "waterbody_line": 1.0,
+            "waterbody_point": 1.2,
             "utility_line": 1.0,
+            "utility_point": 1.2,
+            "bridge": 1.1,
             "railway": 1.0,
             "roof_type": 0.5,
         }
@@ -82,6 +89,8 @@ class TrainingConfig:
             self.checkpoint_dir = Path(self.checkpoint_dir)
         if not isinstance(self.log_dir, Path):
             self.log_dir = Path(self.log_dir)
+        if self.sam2_checkpoint is not None and not isinstance(self.sam2_checkpoint, Path):
+            self.sam2_checkpoint = Path(self.sam2_checkpoint)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
