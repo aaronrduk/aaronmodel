@@ -14,10 +14,9 @@ import json
 import os
 import platform
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 import torch
 from fpdf import FPDF
@@ -67,7 +66,7 @@ def _run_cmd(cmd: List[str], cwd: Path) -> str:
         return "unknown"
 
 
-def load_best_checkpoint_metrics(checkpoint_path: Path) -> Dict[str, object]:
+def load_best_checkpoint_metrics(checkpoint_path: Path) -> Dict[str, Any]:
     if not checkpoint_path.exists():
         return {
             "exists": False,
@@ -88,7 +87,7 @@ def load_best_checkpoint_metrics(checkpoint_path: Path) -> Dict[str, object]:
     }
 
 
-def gather_project_context(repo_root: Path, checkpoint_path: Path) -> Dict[str, object]:
+def gather_project_context(repo_root: Path, checkpoint_path: Path) -> Dict[str, Any]:
     metrics_blob = load_best_checkpoint_metrics(checkpoint_path)
 
     env = {
@@ -121,17 +120,17 @@ def gather_project_context(repo_root: Path, checkpoint_path: Path) -> Dict[str, 
 class ReportPDF(FPDF):
     def __init__(self, title: str, subtitle: str = "") -> None:
         super().__init__(orientation="P", unit="mm", format="A4")
-        self.title = title
-        self.subtitle = subtitle
+        self.report_title = title
+        self.report_subtitle = subtitle
         self.set_auto_page_break(auto=True, margin=15)
         self.set_margins(15, 15, 15)
 
     def header(self) -> None:
         self.set_font("Helvetica", "B", 10)
-        self.cell(0, 6, self.title, new_x="LMARGIN", new_y="NEXT", align="L")
-        if self.subtitle:
+        self.cell(0, 6, self.report_title, new_x="LMARGIN", new_y="NEXT", align="L")
+        if self.report_subtitle:
             self.set_font("Helvetica", "", 8)
-            self.cell(0, 4, self.subtitle, new_x="LMARGIN", new_y="NEXT", align="L")
+            self.cell(0, 4, self.report_subtitle, new_x="LMARGIN", new_y="NEXT", align="L")
         self.ln(1)
         self.set_draw_color(180, 180, 180)
         self.line(15, self.get_y(), 195, self.get_y())
@@ -189,8 +188,8 @@ class ReportPDF(FPDF):
 
     def simple_table(self, headers: List[str], rows: List[List[str]], col_widths: List[float]) -> None:
         self.set_font("Helvetica", "B", 9)
-        for i, h in enumerate(headers):
-            self.cell(col_widths[i], 7, h, border=1, align="L")
+        for i, header in enumerate(headers):
+            self.cell(col_widths[i], 7, header, border=1, align="L")
         self.ln()
         self.set_font("Helvetica", "", 8.8)
         for row in rows:
@@ -201,8 +200,8 @@ class ReportPDF(FPDF):
                 x = self.get_x()
                 y = self.get_y()
                 self.multi_cell(col_widths[i], 5, str(val), border=1)
-                h = self.get_y() - y
-                max_height = max(max_height, h)
+                cell_height = self.get_y() - y
+                max_height = max(max_height, cell_height)
                 self.set_xy(x + col_widths[i], y)
             self.set_xy(x_start, y_start + max_height)
         self.ln(1.5)
@@ -220,11 +219,15 @@ def _fmt(v: float | int | None, nd: int = 4) -> str:
     return f"{float(v):.{nd}f}"
 
 
-def build_model_documentation_pdf(out_path: Path, context: Dict[str, object]) -> None:
-    ck = context["checkpoint"]  # type: ignore[index]
-    metrics: Dict[str, float] = ck.get("metrics", {}) if isinstance(ck, dict) else {}
-    env = context["env"]  # type: ignore[index]
-    git = context["git"]  # type: ignore[index]
+def build_model_documentation_pdf(out_path: Path, context: Mapping[str, Any]) -> None:
+    ck_raw = context.get("checkpoint", {})
+    ck: Dict[str, Any] = ck_raw if isinstance(ck_raw, dict) else {}
+    metrics_raw = ck.get("metrics", {})
+    metrics: Dict[str, float] = metrics_raw if isinstance(metrics_raw, dict) else {}
+    env_raw = context.get("env", {})
+    env: Dict[str, Any] = env_raw if isinstance(env_raw, dict) else {}
+    git_raw = context.get("git", {})
+    git: Dict[str, Any] = git_raw if isinstance(git_raw, dict) else {}
 
     pdf = ReportPDF(
         title="SVAMITVA PS-1 Model Documentation",
@@ -237,8 +240,8 @@ def build_model_documentation_pdf(out_path: Path, context: Dict[str, object]) ->
             "waterbodies, utilities, bridges, and railway using a SAM2-based multi-task architecture."
         ),
         meta_lines=[
-            f"Generated (UTC): {context['generated_at']}",
-            f"Repository: {context['repo_root']}",
+            f"Generated (UTC): {context.get('generated_at', 'unknown')}",
+            f"Repository: {context.get('repo_root', 'unknown')}",
             f"Git branch: {git.get('branch', 'unknown')}",
             f"Git commit: {git.get('commit', 'unknown')}",
             f"Primary checkpoint: {ck.get('path', 'unknown')}",
@@ -457,10 +460,13 @@ def build_model_documentation_pdf(out_path: Path, context: Dict[str, object]) ->
     pdf.output(str(out_path))
 
 
-def build_final_report_pdf(out_path: Path, context: Dict[str, object]) -> None:
-    ck = context["checkpoint"]  # type: ignore[index]
-    metrics: Dict[str, float] = ck.get("metrics", {}) if isinstance(ck, dict) else {}
-    git = context["git"]  # type: ignore[index]
+def build_final_report_pdf(out_path: Path, context: Mapping[str, Any]) -> None:
+    ck_raw = context.get("checkpoint", {})
+    ck: Dict[str, Any] = ck_raw if isinstance(ck_raw, dict) else {}
+    metrics_raw = ck.get("metrics", {})
+    metrics: Dict[str, float] = metrics_raw if isinstance(metrics_raw, dict) else {}
+    git_raw = context.get("git", {})
+    git: Dict[str, Any] = git_raw if isinstance(git_raw, dict) else {}
 
     avg_iou = float(metrics.get("avg_iou", 0.0))
     avg_dice = float(metrics.get("avg_dice", 0.0))
@@ -479,7 +485,7 @@ def build_final_report_pdf(out_path: Path, context: Dict[str, object]) -> None:
             "hackathon target requirements."
         ),
         meta_lines=[
-            f"Generated (UTC): {context['generated_at']}",
+            f"Generated (UTC): {context.get('generated_at', 'unknown')}",
             f"Git branch: {git.get('branch', 'unknown')}",
             f"Git commit: {git.get('commit', 'unknown')}",
             f"Checkpoint assessed: {ck.get('path', 'unknown')}",

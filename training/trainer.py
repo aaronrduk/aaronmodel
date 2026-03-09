@@ -55,12 +55,38 @@ def move_targets(batch: dict, device: torch.device) -> dict:
     return out
 
 
+def get_best_gpu() -> int:
+    """Find the GPU index with the most free memory."""
+    if not torch.cuda.is_available():
+        return 0
+
+    n_devices = torch.cuda.device_count()
+    if n_devices <= 1:
+        return 0
+
+    best_idx = 0
+    max_free = 0
+
+    for i in range(n_devices):
+        try:
+            free, total = torch.cuda.mem_get_info(i)
+            if free > max_free:
+                max_free = free
+                best_idx = i
+        except Exception:
+            continue
+
+    return best_idx
+
+
 def get_device(config: TrainingConfig) -> torch.device:
     """Determine the best available device."""
     if config.force_cpu:
         return torch.device("cpu")
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        best_gpu = get_best_gpu()
+        logger.info(f"Auto-selected GPU:{best_gpu} (most free memory)")
+        return torch.device(f"cuda:{best_gpu}")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
@@ -291,14 +317,18 @@ class Trainer:
         )
 
         # TensorBoard writer
+        self.tb_writer = None
         try:
-            from torch.utils.tensorboard import SummaryWriter
+            # Check if logging is explicitly disabled to save file handles
+            if getattr(config, "enable_tensorboard", True):
+                from torch.utils.tensorboard import SummaryWriter
 
-            self.tb_writer = SummaryWriter(log_dir=str(config.log_dir))
-            logger.info("TensorBoard logging enabled.")
-        except ImportError:
-            self.tb_writer = None
-            logger.warning("TensorBoard not available. Run 'pip install tensorboard'.")
+                self.tb_writer = SummaryWriter(log_dir=str(config.log_dir))
+                logger.info("TensorBoard logging enabled.")
+            else:
+                logger.info("TensorBoard logging disabled by config.")
+        except (ImportError, OSError) as e:
+            logger.warning(f"TensorBoard logging disabled: {e}")
 
         # History
         self.history: Dict[str, list] = {

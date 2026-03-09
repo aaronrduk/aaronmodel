@@ -79,6 +79,7 @@ class TrainingConfig:
     use_wandb: bool = False
     wandb_project: str = "svamitva-ensemble-v3"
     experiment_name: str = "ensemble_baseline"
+    enable_tensorboard: bool = True
 
     def __post_init__(self):
         # Ensure Paths are correctly typed
@@ -92,7 +93,9 @@ class TrainingConfig:
             self.checkpoint_dir = Path(self.checkpoint_dir)
         if not isinstance(self.log_dir, Path):
             self.log_dir = Path(self.log_dir)
-        if self.sam2_checkpoint is not None and not isinstance(self.sam2_checkpoint, Path):
+        if self.sam2_checkpoint is not None and not isinstance(
+            self.sam2_checkpoint, Path
+        ):
             self.sam2_checkpoint = Path(self.sam2_checkpoint)
 
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)

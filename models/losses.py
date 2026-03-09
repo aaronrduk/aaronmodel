@@ -35,7 +35,7 @@ class DiceLoss(nn.Module):
             targets: (B, 1, H, W) binary targets
             mask: (B, 1, H, W) optional valid pixel mask
         """
-        probs = torch.sigmoid(logits)
+        probs = torch.sigmoid(logits).float()
         probs = probs.view(-1)
         targets = targets.float().view(-1)
 
@@ -71,8 +71,8 @@ class BinaryFocalLoss(nn.Module):
         bce = F.binary_cross_entropy_with_logits(
             logits, targets.float(), reduction="none"
         )
-        probs = torch.sigmoid(logits)
-        p_t = probs * targets + (1 - probs) * (1 - targets)
+        probs = torch.sigmoid(logits).float()
+        p_t = probs * targets.float() + (1 - probs) * (1 - targets.float())
         focal_weight = self.alpha * (1.0 - p_t) ** self.gamma
 
         loss = focal_weight * bce

@@ -34,7 +34,7 @@ import numpy as np
 import rasterio
 import torch
 from rasterio.windows import Window
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 from .augmentation import get_train_transforms, get_val_transforms
 from .preprocessing import OrthophotoPreprocessor, ShapefileAnnotationParser
@@ -672,6 +672,8 @@ def create_dataloaders(
         transform=get_train_transforms(image_size),
         mode="train",
     )
+    tr_ds_final: Dataset[Any]
+    val_ds_final: Dataset[Any]
 
     if val_dir is not None:
         val_ds_full = SvamitvaDataset(
@@ -703,7 +705,9 @@ def create_dataloaders(
 
         split_mode_norm = str(split_mode).strip().lower()
         if split_mode_norm not in {"map", "tile"}:
-            logger.warning("Unknown split_mode='%s'; falling back to map split.", split_mode)
+            logger.warning(
+                "Unknown split_mode='%s'; falling back to map split.", split_mode
+            )
             split_mode_norm = "map"
 
         if split_mode_norm == "map":
@@ -741,17 +745,27 @@ def create_dataloaders(
         val_ds_final = Subset(val_ds, val_idx)
 
     # Optional caps for fast smoke runs on very large maps.
-    from torch.utils.data import Subset
-
-    if max_train_tiles is not None and max_train_tiles > 0 and len(tr_ds_final) > max_train_tiles:
+    if (
+        max_train_tiles is not None
+        and max_train_tiles > 0
+        and len(tr_ds_final) > max_train_tiles
+    ):
         rng = np.random.default_rng(seed)
-        idx = rng.choice(len(tr_ds_final), size=int(max_train_tiles), replace=False).tolist()
+        idx = rng.choice(
+            len(tr_ds_final), size=int(max_train_tiles), replace=False
+        ).tolist()
         tr_ds_final = Subset(tr_ds_final, idx)
         logger.info("Applied max_train_tiles=%d", len(tr_ds_final))
 
-    if max_val_tiles is not None and max_val_tiles > 0 and len(val_ds_final) > max_val_tiles:
+    if (
+        max_val_tiles is not None
+        and max_val_tiles > 0
+        and len(val_ds_final) > max_val_tiles
+    ):
         rng = np.random.default_rng(seed + 1)
-        idx = rng.choice(len(val_ds_final), size=int(max_val_tiles), replace=False).tolist()
+        idx = rng.choice(
+            len(val_ds_final), size=int(max_val_tiles), replace=False
+        ).tolist()
         val_ds_final = Subset(val_ds_final, idx)
         logger.info("Applied max_val_tiles=%d", len(val_ds_final))
 
@@ -806,7 +820,9 @@ def create_kfold_dataloaders(
         mode="val",
     )
     if len(train_ds) != len(val_ds):
-        raise RuntimeError("Train/val dataset size mismatch while building k-fold loaders.")
+        raise RuntimeError(
+            "Train/val dataset size mismatch while building k-fold loaders."
+        )
 
     splits = create_map_kfold_splits(train_ds.samples, n_splits=n_splits, seed=seed)
     from torch.utils.data import Subset
