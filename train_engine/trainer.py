@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.amp import GradScaler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -84,8 +86,10 @@ def get_device(config: TrainingConfig) -> torch.device:
     if config.force_cpu:
         return torch.device("cpu")
     if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
         best_gpu = get_best_gpu()
-        logger.info(f"Auto-selected GPU:{best_gpu} (most free memory)")
+        logger.info(f"Total CUDA GPUs detected: {n_gpus}")
+        logger.info(f"Auto-selected primary GPU:{best_gpu} (most free memory)")
         return torch.device(f"cuda:{best_gpu}")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return torch.device("mps")
@@ -159,11 +163,21 @@ class CheckpointManager:
         scheduler: Any,
         epoch: int,
         metrics: Dict[str, float],
+        rank: int = 0,
     ):
         """Save a 'best_latest.pt' checkpoint for crash recovery."""
+        if rank != 0:
+            return
+
+        # Handle DataParallel/DDP state_dict
+        if hasattr(model, "module"):
+            model_state = model.module.state_dict()
+        else:
+            model_state = model.state_dict()
+
         state = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": model_state,
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": (
                 scheduler.state_dict() if scheduler is not None else None
@@ -181,6 +195,7 @@ class CheckpointManager:
         scheduler: Any,
         epoch: int,
         metrics: Dict[str, float],
+        rank: int = 0,
     ) -> bool:
         """
         Save model to best.pt if it's the new best.
@@ -188,18 +203,23 @@ class CheckpointManager:
         score = metrics.get(self.metric_name, 0)
         is_best = score > self.best_score
 
-        # Always save latest for crash recovery
-        self.save_latest(model, optimizer, scheduler, epoch, metrics)
+        # Always save latest for crash recovery (only rank 0)
+        self.save_latest(model, optimizer, scheduler, epoch, metrics, rank)
 
-        if is_best:
+        if is_best and rank == 0:
             self.best_score = score
             self.best_epoch = epoch
             self.epochs_no_improve = 0
 
-            # Save state
+            # Handle DataParallel state_dict
+            if hasattr(model, "module"):
+                model_state = model.module.state_dict()
+            else:
+                model_state = model.state_dict()
+
             state = {
                 "epoch": epoch,
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": model_state,
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": (
                     scheduler.state_dict() if scheduler is not None else None
@@ -250,7 +270,56 @@ class Trainer:
         self.device = get_device(config)
         logger.info(f"Using device: {self.device}")
 
-        self.model = model.to(self.device)
+        # Handle Distributed or DataParallel
+        raw_model = model.to(self.device)
+        self.is_multi_gpu = False
+        self.is_distributed = dist.is_available() and dist.is_initialized()
+        self.rank = dist.get_rank() if self.is_distributed else 0
+        self.world_size = dist.get_world_size() if self.is_distributed else 1
+
+        if self.is_distributed:
+            logger.info(
+                f"🚀 Activating DDP on rank {self.rank}/{self.world_size} "
+                f"(Device: {self.device})"
+            )
+            self.model = DDP(
+                raw_model,
+                device_ids=(
+                    [self.device.index] if self.device.type == "cuda" else None
+                ),
+            )
+            self.is_multi_gpu = True
+        elif (
+            torch.cuda.is_available()
+            and torch.cuda.device_count() > 1
+            and not config.force_cpu
+        ):
+            n_gpus = torch.cuda.device_count()
+            # DataParallel requires model on device_ids[0] = cuda:0
+            try:
+                self.device = torch.device("cuda:0")
+                raw_model = raw_model.to(self.device)
+                logger.info(
+                    f"🚀 Activating DataParallel on "
+                    f"{n_gpus} GPUs (Master: {self.device})"
+                )
+                self.model = nn.DataParallel(raw_model)
+                self.is_multi_gpu = True
+            except RuntimeError as dp_err:
+                logger.warning(
+                    f"⚠️ DataParallel failed: {dp_err}. " f"Falling back to single GPU."
+                )
+                self.model = raw_model
+                self.is_multi_gpu = False
+        else:
+            self.model = raw_model
+            if not config.force_cpu:
+                n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+                if n_gpus <= 1:
+                    logger.info(f"Multi-GPU skipped: {n_gpus} GPU(s) visible.")
+            else:
+                logger.info("Multi-GPU skipped: force_cpu is True.")
+
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.loss_fn = loss_fn.to(self.device)
@@ -316,19 +385,20 @@ class Trainer:
             config.patience,
         )
 
-        # TensorBoard writer
+        # TensorBoard writer (only on rank 0)
         self.tb_writer = None
-        try:
-            # Check if logging is explicitly disabled to save file handles
-            if getattr(config, "enable_tensorboard", True):
-                from torch.utils.tensorboard import SummaryWriter
+        if self.rank == 0:
+            try:
+                # Check if logging is explicitly disabled to save file handles
+                if getattr(config, "enable_tensorboard", True):
+                    from torch.utils.tensorboard import SummaryWriter
 
-                self.tb_writer = SummaryWriter(log_dir=str(config.log_dir))
-                logger.info("TensorBoard logging enabled.")
-            else:
-                logger.info("TensorBoard logging disabled by config.")
-        except (ImportError, OSError) as e:
-            logger.warning(f"TensorBoard logging disabled: {e}")
+                    self.tb_writer = SummaryWriter(log_dir=str(config.log_dir))
+                    logger.info("TensorBoard logging enabled.")
+                else:
+                    logger.info("TensorBoard logging disabled by config.")
+            except (ImportError, OSError) as e:
+                logger.warning(f"TensorBoard logging disabled: {e}")
 
         # History
         self.history: Dict[str, list] = {
@@ -352,13 +422,21 @@ class Trainer:
 
         try:
             for epoch in range(self.start_epoch, self.config.num_epochs + 1):
+                # For DDP, we need to set the epoch on the sampler for correct shuffling
+                if self.is_distributed and hasattr(self.train_loader, "sampler"):
+                    if hasattr(self.train_loader.sampler, "set_epoch"):
+                        self.train_loader.sampler.set_epoch(epoch)
+
                 # ... unfreezing logic ...
+                model_to_unfreeze = (
+                    self.model.module if self.is_multi_gpu else self.model
+                )
                 if epoch == self.config.freeze_backbone_epochs + 1:
                     logger.info(f"Epoch {epoch}: Unfreezing backbone")
-                    self.model.unfreeze_backbone()
+                    model_to_unfreeze.unfreeze_backbone()
 
                 if epoch <= self.config.freeze_backbone_epochs:
-                    self.model.freeze_backbone()
+                    model_to_unfreeze.freeze_backbone()
 
                 # Train
                 train_loss, train_breakdown = self._train_epoch(epoch)
@@ -394,7 +472,12 @@ class Trainer:
 
                 # Save checkpoint (includes best_latest.pt save)
                 self.ckpt_mgr.save(
-                    self.model, self.optimizer, self.scheduler, epoch, val_metrics
+                    self.model,
+                    self.optimizer,
+                    self.scheduler,
+                    epoch,
+                    val_metrics,
+                    self.rank,
                 )
 
                 # Early stopping
@@ -409,12 +492,16 @@ class Trainer:
         except (KeyboardInterrupt, Exception) as e:
             logger.error(f"Training interrupted or crashed: {e}")
             logger.info("Saving emergency checkpoint to best_latest.pt...")
-            # Emergency save using current state
-            # Determine which epoch we were on - if loop didn't start it might be undefined
+            # Emergency save using current state (only rank 0)
             current_epoch = epoch if "epoch" in locals() else 0
             metrics = {"epoch_interrupted": True}
             self.ckpt_mgr.save_latest(
-                self.model, self.optimizer, self.scheduler, current_epoch, metrics
+                self.model,
+                self.optimizer,
+                self.scheduler,
+                current_epoch,
+                metrics,
+                self.rank,
             )
             if isinstance(e, KeyboardInterrupt):
                 self.was_interrupted = True
@@ -434,7 +521,11 @@ class Trainer:
                 torch.save(
                     {
                         "epoch": epoch,
-                        "model_state_dict": self.model.state_dict(),
+                        "model_state_dict": (
+                            self.model.module.state_dict()
+                            if self.is_multi_gpu
+                            else self.model.state_dict()
+                        ),
                         "optimizer_state_dict": self.optimizer.state_dict(),
                         "scheduler_state_dict": (
                             self.scheduler.state_dict()
@@ -462,7 +553,8 @@ class Trainer:
 
         logger.info(
             f"Training complete. Best {self.config.metric_for_best}: "
-            f"{self.ckpt_mgr.best_score:.4f} at epoch {self.ckpt_mgr.best_epoch}"
+            f"{self.ckpt_mgr.best_score:.4f} at epoch "
+            f"{self.ckpt_mgr.best_epoch}"
         )
 
     def _train_epoch(self, epoch: int) -> Tuple[float, Dict[str, float]]:
@@ -472,14 +564,17 @@ class Trainer:
         breakdown_sums: Dict[str, float] = {}
         n_batches = 0
 
-        pbar = tqdm(
-            self.train_loader,
-            desc=f"Train Epoch {epoch}",
-            leave=False,
-            dynamic_ncols=True,
-        )
+        # For DDP, only show progress bar on rank 0
+        train_iter: Any = self.train_loader
+        if self.rank == 0:
+            train_iter = tqdm(
+                self.train_loader,
+                desc=f"Train Epoch {epoch}",
+                leave=False,
+                dynamic_ncols=True,
+            )
 
-        for batch in pbar:
+        for i, batch in enumerate(train_iter):
             batch = move_targets(batch, self.device)
             images = batch["image"]
 
@@ -493,9 +588,11 @@ class Trainer:
 
             # Skip NaN/Inf loss batches
             if torch.isnan(loss) or torch.isinf(loss):
-                pbar.set_postfix(loss="NaN-skip")
+                if self.rank == 0:
+                    train_iter.set_postfix(loss="NaN-skip")
                 continue
 
+            # Backward and Step
             if self.use_amp:
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
@@ -511,16 +608,17 @@ class Trainer:
                 )
                 self.optimizer.step()
 
-            if self._scheduler_step_per_batch:
-                self.scheduler.step()
-
             total_loss += loss.item()
             n_batches += 1
+
+            if self._scheduler_step_per_batch:
+                self.scheduler.step()
 
             for k, v in breakdown.items():
                 breakdown_sums[k] = breakdown_sums.get(k, 0) + v
 
-            pbar.set_postfix(loss=f"{loss.item():.4f}")
+            if self.rank == 0:
+                train_iter.set_postfix(loss=f"{loss.item():.4f}")
 
         avg_loss = total_loss / max(n_batches, 1)
         avg_breakdown = {k: v / max(n_batches, 1) for k, v in breakdown_sums.items()}
@@ -534,14 +632,17 @@ class Trainer:
         total_loss = 0.0
         n_batches = 0
 
-        pbar = tqdm(
-            self.val_loader,
-            desc=f"Val Epoch {epoch}",
-            leave=False,
-            dynamic_ncols=True,
-        )
+        # For DDP, only show progress bar on rank 0
+        val_iter: Any = self.val_loader
+        if self.rank == 0:
+            val_iter = tqdm(
+                self.val_loader,
+                desc=f"Val Epoch {epoch}",
+                leave=False,
+                dynamic_ncols=True,
+            )
 
-        for batch in pbar:
+        for batch in val_iter:
             batch = move_targets(batch, self.device)
             images = batch["image"]
 

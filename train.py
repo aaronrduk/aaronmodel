@@ -116,8 +116,8 @@ def main():
     from data.dataset import create_dataloaders
     from models.losses import MultiTaskLoss
     from models.model import EnsembleSvamitvaModel
-    from training.config import TrainingConfig, get_quick_test_config
-    from training.trainer import Trainer
+    from train_engine.config import TrainingConfig, get_quick_test_config
+    from train_engine.trainer import Trainer
 
     # Configuration
     if args.quick_test:

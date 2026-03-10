@@ -25,63 +25,63 @@ ROOF_LABELS = ["Background", "RCC", "Tiled", "Tin", "Others"]
 # Feature Optimization Settings
 FEATURE_CONFIG: Dict[str, Dict[str, Any]] = {
     "building_mask": {
-        "name": "Buildings",
+        "name": "Built-up_Area",
         "type": "Polygon",
         "min_area": 15,
         "simplify": 0.5,
     },
     "roof_type_mask": {
-        "name": "Roof_Types",
+        "name": "Roof_Classification",
         "type": "Polygon",
         "min_area": 10,
         "simplify": 0.5,
     },
-    "road_mask": {"name": "Roads", "type": "Polygon", "min_area": 30, "simplify": 0.8},
+    "road_mask": {"name": "Road", "type": "Polygon", "min_area": 30, "simplify": 0.8},
     "road_centerline_mask": {
-        "name": "Road_Centerlines",
+        "name": "Road_Centre_Line",
         "type": "LineString",
         "min_length": 5,
         "simplify": 0.5,
     },
     "waterbody_mask": {
-        "name": "Waterbodies",
+        "name": "Water_Body",
         "type": "Polygon",
         "min_area": 25,
         "simplify": 1.0,
     },
     "waterbody_line_mask": {
-        "name": "Waterbody_Lines",
+        "name": "Water_Body_Line",
         "type": "LineString",
         "min_length": 5,
         "simplify": 0.5,
     },
-    "waterbody_point_mask": {"name": "Wells", "type": "Point"},
+    "waterbody_point_mask": {"name": "Waterbody_Point_Wells", "type": "Point"},
     "utility_line_mask": {
-        "name": "Utility_Lines",
+        "name": "Utility_Pipeline_Wires",
         "type": "LineString",
         "min_length": 5,
         "simplify": 0.5,
     },
-    "utility_point_mask": {"name": "Utility_Points", "type": "Point"},
+    "utility_point_mask": {"name": "Utility_Point_Transformers_Tanks", "type": "Point"},
     "bridge_mask": {
-        "name": "Bridges",
+        "name": "Bridge",
         "type": "Polygon",
         "min_area": 20,
         "simplify": 0.5,
     },
     "railway_mask": {
-        "name": "Railways",
+        "name": "Railway",
         "type": "LineString",
         "min_length": 10,
         "simplify": 1.0,
     },
 }
 
-# YOLO Class Mapping
+# YOLO Class Mapping (used for point categorization)
 YOLO_CLASS_INFO = {
-    0: {"name": "Wells", "key": "waterbody_point_mask"},
-    1: {"name": "Transformers", "key": "utility_point_mask"},
-    2: {"name": "Tanks", "key": "utility_point_mask"},
+    0: {"name": "Well", "key": "waterbody_point_mask"},
+    1: {"name": "Transformer", "key": "utility_point_mask"},
+    2: {"name": "Tank", "key": "utility_point_mask"},
 }
 
 
@@ -235,7 +235,7 @@ class GISExporter:
         # 2. Process YOLO Detections
         if "detections" in results:
             logger.info("Processing YOLOv8 detections...")
-            det_by_key: Dict[str, List[Point]] = {}
+            det_by_key: Dict[str, List[Dict[str, Any]]] = {}
             for det in results["detections"]:
                 info = YOLO_CLASS_INFO.get(det["class"])
                 if info:
@@ -246,12 +246,19 @@ class GISExporter:
                     x1, y1, x2, y2 = det["box"]
                     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                     world_pt = Point(transform * (cx, cy))
-                    det_by_key[key].append(world_pt)
 
-            for key, points in det_by_key.items():
+                    det_by_key[key].append(
+                        {
+                            "geometry": world_pt,
+                            "label": det.get("label", info["name"]),
+                            "confidence": det.get("conf", 0.0),
+                        }
+                    )
+
+            for key, items in det_by_key.items():
                 name = FEATURE_CONFIG[key]["name"]
-                exported_paths[f"det_{key}"] = self._write_gpkg(
-                    points, name, key, transform
+                exported_paths[f"det_{key}"] = self._write_records(
+                    items, name, layer_class=name
                 )
 
         return exported_paths

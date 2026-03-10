@@ -369,8 +369,8 @@ class SvamitvaDataset(Dataset):
 
                     # If this tile region in the thumbnail is 100% background, skip it
                     tile_valid = valid_mask_thumb[ty0:ty1, tx0:tx1]
-                    # We require at least 1% of the tile to roughly contain some valid pixels
-                    if tile_valid.size > 0 and tile_valid.mean() < 0.01:
+                    # We require at least 5% of the tile to roughly contain some valid pixels
+                    if tile_valid.size > 0 and tile_valid.mean() < 0.05:
                         continue
 
                 valid_tiles.append((y0, x0))
@@ -658,7 +658,8 @@ def create_dataloaders(
     seed: int = 42,
     max_train_tiles: Optional[int] = None,
     max_val_tiles: Optional[int] = None,
-) -> Tuple:
+    distributed: bool = False,
+) -> Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     """
     Build train and validation DataLoaders.
 
@@ -769,10 +770,20 @@ def create_dataloaders(
         val_ds_final = Subset(val_ds_final, idx)
         logger.info("Applied max_val_tiles=%d", len(val_ds_final))
 
+    # Distributed Samplers
+    train_sampler = None
+    val_sampler = None
+    if distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(tr_ds_final)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(
+            val_ds_final, shuffle=False
+        )
+
     train_loader = torch.utils.data.DataLoader(
         tr_ds_final,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=(num_workers > 0),
         drop_last=len(tr_ds_final) > batch_size,
@@ -782,12 +793,14 @@ def create_dataloaders(
         val_ds_final,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=num_workers,
         pin_memory=(num_workers > 0),
         persistent_workers=(num_workers > 0),
     )
     logger.info(
-        f"DataLoaders ready: {len(train_loader)} train batches, {len(val_loader)} val batches"
+        f"DataLoaders ready (Distributed={distributed}): "
+        f"{len(train_loader)} train batches, {len(val_loader)} val batches"
     )
     return train_loader, val_loader
 
@@ -796,10 +809,11 @@ def create_kfold_dataloaders(
     train_dirs: List[Path],
     n_splits: int = 5,
     batch_size: int = 8,
-    num_workers: int = 0,
+    num_workers: int = 4,
     image_size: int = TILE_SIZE,
     tile_overlap: Optional[int] = None,
     seed: int = 42,
+    distributed: bool = False,
 ) -> List[Tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader, List[str]]]:
     """
     Create map-level K-fold train/val DataLoaders.
@@ -833,10 +847,21 @@ def create_kfold_dataloaders(
     for train_idx, val_idx, val_maps in splits:
         tr_subset = Subset(train_ds, train_idx)
         val_subset = Subset(val_ds, val_idx)
+
+        # Distributed Samplers
+        tr_sampler = None
+        val_sampler = None
+        if distributed:
+            tr_sampler = torch.utils.data.distributed.DistributedSampler(tr_subset)
+            val_sampler = torch.utils.data.distributed.DistributedSampler(
+                val_subset, shuffle=False
+            )
+
         tr_loader = torch.utils.data.DataLoader(
             tr_subset,
             batch_size=batch_size,
-            shuffle=True,
+            shuffle=(tr_sampler is None),
+            sampler=tr_sampler,
             num_workers=num_workers,
             pin_memory=(num_workers > 0),
             drop_last=len(tr_subset) > batch_size,
@@ -846,6 +871,7 @@ def create_kfold_dataloaders(
             val_subset,
             batch_size=batch_size,
             shuffle=False,
+            sampler=val_sampler,
             num_workers=num_workers,
             pin_memory=(num_workers > 0),
             persistent_workers=(num_workers > 0),

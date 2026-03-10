@@ -6,7 +6,7 @@ This script is aligned with the current project APIs:
 - data.dataset.create_dataloaders
 - models.model.EnsembleSvamitvaModel
 - models.losses.MultiTaskLoss
-- training.trainer.Trainer
+- train_engine.trainer.Trainer
 """
 
 import argparse
@@ -28,8 +28,8 @@ if str(REPO_ROOT) not in sys.path:
 from data.dataset import create_dataloaders
 from models.losses import MultiTaskLoss
 from models.model import EnsembleSvamitvaModel
-from training.config import TrainingConfig
-from training.trainer import Trainer
+from train_engine.config import TrainingConfig
+from train_engine.trainer import Trainer
 
 logging.basicConfig(
     level=logging.INFO,

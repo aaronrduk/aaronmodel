@@ -42,7 +42,12 @@ def parse_args():
 
     # Training
     p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument(
+        "--batch_size",
+        type=int,
+        default=64,
+        help="Batch size (8-16 per GPU recommended)",
+    )
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--tile_size", type=int, default=512)
     p.add_argument("--tile_overlap", type=int, default=96)
@@ -58,6 +63,12 @@ def parse_args():
     # DGX Specifics
     p.add_argument("--checkpoint_dir", default="check", help="Requested 'check' dir")
     p.add_argument("--name", default="dgx_ensemble_v3", help="Experiment name")
+    p.add_argument(
+        "--multi_gpu",
+        action="store_true",
+        default=True,
+        help="Use DataParallel on all GPUs",
+    )
     p.add_argument("--quick_test", action="store_true", help="3-epoch smoke test")
 
     return p.parse_args()
@@ -73,8 +84,8 @@ def main():
     from data.dataset import create_dataloaders
     from models.losses import MultiTaskLoss
     from models.model import EnsembleSvamitvaModel
-    from training.config import TrainingConfig, get_quick_test_config
-    from training.trainer import Trainer
+    from train_engine.config import TrainingConfig, get_quick_test_config
+    from train_engine.trainer import Trainer
 
     # Configuration
     if args.quick_test:
@@ -100,7 +111,12 @@ def main():
             dropout=args.dropout,
             sam2_checkpoint=Path(args.sam2_checkpoint),
             mixed_precision=True,
+            force_cpu=not torch.cuda.is_available(),
         )
+        # Handle multi_gpu flag override if requested
+        if not args.multi_gpu:
+            logger.info("⚠️ Multi-GPU disabled by flag. Using single GPU.")
+            config.force_cpu = False  # Just an example, we'd need a specific flag for single vs multi in TrainingConfig if we wanted more control
 
     # Data (Preprocessing happens here: tiling, normalization, etc.)
     logger.info(f"Loading datasets with tile_size={config.tile_size}...")

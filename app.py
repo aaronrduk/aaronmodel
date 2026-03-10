@@ -71,24 +71,20 @@ st.markdown(
 # ── Metadata ─────────────────────────────────────────────────────────
 
 FEATURES = {
-    "building_mask": ("🏘️ Buildings (SAM2+Dual-Head)", (255, 100, 50)),
-    "roof_type_mask": ("🏠 Roof Types (RCC/Tiled/Tin/Others)", (255, 0, 180)),
-    "road_mask": ("🛣️ Roads (SAM2+Link-Head)", (255, 255, 100)),
-    "road_centerline_mask": ("🧭 Road Centre Line", (255, 220, 0)),
-    "waterbody_mask": ("💧 Waterbodies (SAM2+Binary-Head)", (50, 150, 255)),
-    "waterbody_line_mask": ("🌊 Water Body Line", (0, 210, 255)),
-    "waterbody_point_mask": ("🕳️ Wells (YOLOv8 + SAM2)", (0, 255, 255)),
-    "utility_line_mask": ("⚡ Utility Lines (SAM2+Line-Head)", (50, 220, 100)),
-    "utility_point_mask": ("🔌 Utility Points (YOLOv8 + SAM2)", (0, 255, 120)),
-    "bridge_mask": ("🌉 Bridge", (255, 140, 0)),
-    "railway_mask": ("🚂 Railways (SAM2+Line-Head)", (180, 80, 255)),
+    "building_mask": ("Built-up Area (Polygon)", (255, 100, 50)),
+    "roof_type_mask": ("Roof Classification (Polygon)", (255, 0, 180)),
+    "road_mask": ("Road (Polygon)", (255, 255, 100)),
+    "road_centerline_mask": ("Road Centre Line (LineString)", (255, 220, 0)),
+    "waterbody_mask": ("Water Body (Polygon)", (50, 150, 255)),
+    "waterbody_line_mask": ("Water Body Line (LineString)", (0, 210, 255)),
+    "waterbody_point_mask": ("Waterbody Point - Wells (Point)", (0, 255, 255)),
+    "utility_line_mask": ("Utility - Pipeline/Wires (LineString)", (50, 220, 100)),
+    "utility_point_mask": ("Utility Point - Transformers/Tanks (Point)", (0, 255, 120)),
+    "bridge_mask": ("Bridge (Polygon)", (255, 140, 0)),
+    "railway_mask": ("Railway (LineString)", (180, 80, 255)),
 }
 
-DEVICE = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # Helper for robust weight selection
@@ -150,7 +146,7 @@ def main():
         col_run, col_info = st.columns([1, 2])
         with col_run:
             if st.button(
-                "🚀 Execute Unified Pipeline", type="primary", use_container_width=True
+                "🚀 Execute Unified Pipeline", type="primary", width="stretch"
             ):
                 with st.spinner("Analyzing Image..."):
                     st.info(
@@ -167,10 +163,18 @@ def main():
                         overlap=overlap,
                     )
                     predictor.threshold = threshold
-                    st.session_state.results = predictor.predict_tif(
-                        tif_path,
-                        selected_masks=selected_masks,
-                    )
+
+                    if is_geospatial:
+                        st.session_state.results = predictor.predict_tif(
+                            tif_path,
+                            selected_masks=selected_masks,
+                        )
+                    else:
+                        st.session_state.results = predictor.predict_image(
+                            tif_path,
+                            selected_masks=selected_masks,
+                        )
+
                     st.session_state.tif_path = tif_path
                     st.session_state.is_geospatial = is_geospatial
                     st.success("Analysis Complete!")
@@ -244,13 +248,15 @@ def main():
                             interpolation=interp,
                         )
                         binary = (
-                            m_small > 0 if key == "roof_type_mask" else m_small > threshold
+                            m_small > 0
+                            if key == "roof_type_mask"
+                            else m_small > threshold
                         )
                         for c in range(3):
                             overlay[binary, c] = (
                                 overlay[binary, c] * (1 - alpha) + color[c] * alpha
                             )
-                st.image(overlay.astype(np.uint8), use_container_width=True)
+                st.image(overlay.astype(np.uint8), width="stretch")
 
             with tab_detail:
                 st.subheader("Feature Inspection")
@@ -313,7 +319,7 @@ def main():
                             f_ovl[bin_mask, i] = (
                                 f_ovl[bin_mask, i] * (1 - alpha) + f_color[i] * alpha
                             )
-                    st.image(f_ovl.astype(np.uint8), use_container_width=True)
+                    st.image(f_ovl.astype(np.uint8), width="stretch")
 
 
 if __name__ == "__main__":

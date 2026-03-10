@@ -27,6 +27,7 @@ from .heads import create_all_heads
 logger = logging.getLogger(__name__)
 
 DEFAULT_SAM2_CKPT_CANDIDATES = [
+    Path("check/sam2.1_hiera_base_plus.pt"),
     Path("checkpoints/sam2.1_hiera_base_plus.pt"),
     Path("checkpoints/sam2_hiera_base_plus.pt"),
 ]

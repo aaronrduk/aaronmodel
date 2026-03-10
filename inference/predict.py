@@ -47,7 +47,9 @@ def _discover_local_ultralytics_roots() -> List[Path]:
             children = [root]
 
         for base in children:
-            if (base / "ultralytics" / "__init__.py").exists() and base not in candidates:
+            if (
+                base / "ultralytics" / "__init__.py"
+            ).exists() and base not in candidates:
                 candidates.append(base)
 
             # One extra depth level is enough for typical `*-main` extracts.
@@ -192,7 +194,9 @@ def _nms_detections(
             continue
 
         boxes = np.array([d["box"] for d in cls_dets], dtype=np.float32)
-        scores = np.array([float(d.get("conf", 0.0)) for d in cls_dets], dtype=np.float32)
+        scores = np.array(
+            [float(d.get("conf", 0.0)) for d in cls_dets], dtype=np.float32
+        )
         order = scores.argsort()[::-1]
 
         while order.size > 0:
@@ -255,9 +259,14 @@ class TiledPredictor:
 
     # YOLO class IDs -> target point masks
     YOLO_CLASS_TO_MASK = {
-        0: "waterbody_point_mask",  # wells
-        1: "utility_point_mask",  # transformers
-        2: "utility_point_mask",  # tanks
+        0: "waterbody_point_mask",  # Wells
+        1: "utility_point_mask",  # Transformers
+        2: "utility_point_mask",  # Tanks
+    }
+    YOLO_LABELS = {
+        0: "Well",
+        1: "Transformer",
+        2: "Tank",
     }
 
     def __init__(
@@ -328,9 +337,7 @@ class TiledPredictor:
         image = _percentile_stretch(image)
         # 2) ImageNet normalization (matches albumentations A.Normalize)
         image = (image - IMAGENET_MEAN) / IMAGENET_STD
-        image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0).astype(
-            np.float32
-        )
+        image = np.nan_to_num(image, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
         # (H, W, C) -> (C, H, W)
         img_t = torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1)
@@ -436,6 +443,7 @@ class TiledPredictor:
                     {
                         "box": [gx1, gy1, gx2, gy2],
                         "class": cls_id,
+                        "label": self.YOLO_LABELS.get(cls_id, "Unknown"),
                         "conf": conf,
                         "mask_key": mask_key,
                     }
@@ -478,7 +486,9 @@ class TiledPredictor:
                 point_masks[mask_key] = np.maximum(point_masks[mask_key], tmp)
             else:
                 if 0 <= cy < h and 0 <= cx < w:
-                    point_masks[mask_key][cy, cx] = max(point_masks[mask_key][cy, cx], conf)
+                    point_masks[mask_key][cy, cx] = max(
+                        point_masks[mask_key][cy, cx], conf
+                    )
 
         return point_masks
 
@@ -510,7 +520,9 @@ class TiledPredictor:
                 if key in selected
             }
             roof_accum = (
-                np.zeros((5, h, w), dtype=np.float32) if self.ROOF_KEY in selected else None
+                np.zeros((5, h, w), dtype=np.float32)
+                if self.ROOF_KEY in selected
+                else None
             )
             raw_detections: List[Dict[str, Any]] = []
             weight_map = np.zeros((h, w), dtype=np.float32)
@@ -559,8 +571,12 @@ class TiledPredictor:
                 if roof_accum is not None and self.ROOF_KEY in model_outputs:
                     roof_logits = model_outputs[self.ROOF_KEY]
                     if roof_logits.ndim == 3 and roof_logits.shape[0] >= 2:
-                        roof_probs = _softmax_np(roof_logits[:, :th_act, :tw_act], axis=0)
-                        roof_accum[:, y0 : y0 + th_act, x0 : x0 + tw_act] += roof_probs * blend[None]
+                        roof_probs = _softmax_np(
+                            roof_logits[:, :th_act, :tw_act], axis=0
+                        )
+                        roof_accum[:, y0 : y0 + th_act, x0 : x0 + tw_act] += (
+                            roof_probs * blend[None]
+                        )
 
                 # YOLO point detection (wells / transformers / tanks)
                 if self.yolo is not None and selected_point_keys:
@@ -615,6 +631,189 @@ class TiledPredictor:
         final_results["detections"] = detections
         return final_results
 
+    @torch.no_grad()
+    def predict_image(
+        self,
+        image_path: Path,
+        selected_masks: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run inference on a standard image (JPG, PNG, JPEG, BMP).
+
+        Falls back to predict_tif for GeoTIFF formats.
+        Works by loading via PIL, tiling, and running the
+        same model pipeline.
+        """
+        ext = image_path.suffix.lower()
+        if ext in {".tif", ".tiff"}:
+            return self.predict_tif(image_path, selected_masks)
+
+        try:
+            from PIL import Image
+        except ImportError:
+            raise ImportError(
+                "PIL (Pillow) is required for JPG/PNG support. "
+                "Install with: pip install Pillow"
+            )
+
+        selected = set(selected_masks or self.ALL_OUTPUT_KEYS)
+        selected = {k for k in selected if k in set(self.ALL_OUTPUT_KEYS)}
+        if not selected:
+            selected = set(self.ALL_OUTPUT_KEYS)
+
+        selected_point_keys = self.POINT_KEYS & selected
+
+        # Load image as numpy array
+        pil_img = Image.open(image_path).convert("RGB")
+        full_image = np.array(pil_img, dtype=np.float32)
+        # Normalize to [0, 1] if uint8
+        if full_image.max() > 1.0:
+            full_image = full_image / 255.0
+
+        h, w = full_image.shape[:2]
+        logger.info(
+            "Predicting %s (%dx%d, format=%s)",
+            image_path.name,
+            w,
+            h,
+            ext,
+        )
+
+        model_accum: Dict[str, np.ndarray] = {
+            key: np.zeros((h, w), dtype=np.float32)
+            for key in self.BINARY_MODEL_KEYS
+            if key in selected
+        }
+        roof_accum = (
+            np.zeros((5, h, w), dtype=np.float32) if self.ROOF_KEY in selected else None
+        )
+        raw_detections: List[Dict[str, Any]] = []
+        weight_map = np.zeros((h, w), dtype=np.float32)
+
+        stride = max(1, self.tile_size - self.overlap)
+        windows = []
+        for y in range(0, h, stride):
+            for x in range(0, w, stride):
+                tw = min(self.tile_size, w - x)
+                th_act = min(self.tile_size, h - y)
+                windows.append((x, y, tw, th_act))
+
+        for x0, y0, tw_act, th_act in tqdm(
+            windows,
+            desc="Inference",
+            leave=False,
+        ):
+            # Crop tile
+            tile_img = np.zeros(
+                (self.tile_size, self.tile_size, 3),
+                dtype=np.float32,
+            )
+            crop = full_image[y0 : y0 + th_act, x0 : x0 + tw_act]
+            tile_img[:th_act, :tw_act] = crop
+
+            # Skip empty tiles
+            if float(crop.mean()) < 0.01:
+                continue
+
+            blend = self.blend_kernel[:th_act, :tw_act]
+            weight_map[y0 : y0 + th_act, x0 : x0 + tw_act] += blend
+
+            # Model prediction
+            model_outputs = self._predict_tile_model(tile_img)
+
+            for key in list(model_accum.keys()):
+                if key not in model_outputs:
+                    continue
+                logits = model_outputs[key]
+                if logits.ndim == 3 and logits.shape[0] == 1:
+                    logits2d = logits[0]
+                elif logits.ndim == 2:
+                    logits2d = logits
+                else:
+                    continue
+                model_accum[key][y0 : y0 + th_act, x0 : x0 + tw_act] += (
+                    logits2d[:th_act, :tw_act] * blend
+                )
+
+            if roof_accum is not None:
+                roof_key = self.ROOF_KEY
+                if roof_key in model_outputs:
+                    roof_logits = model_outputs[roof_key]
+                    for c in range(min(5, roof_logits.shape[0])):
+                        roof_accum[c][
+                            y0 : y0 + th_act,
+                            x0 : x0 + tw_act,
+                        ] += (
+                            roof_logits[c][:th_act, :tw_act] * blend
+                        )
+
+            # YOLO point detection
+            if self.yolo is not None and selected_point_keys:
+                # Convert to uint8 for YOLO
+                tile_u8 = np.clip(tile_img * 255, 0, 255).astype(np.uint8)
+                self._run_yolo_tile(
+                    tile_u8,
+                    x0,
+                    y0,
+                    selected_point_keys,
+                    raw_detections,
+                )
+
+        # Normalize by weight map
+        safe_w = np.maximum(weight_map, 1e-6)
+        final_results: Dict[str, Any] = {}
+
+        for key, accum in model_accum.items():
+            prob = _sigmoid_np(accum / safe_w)
+            final_results[key] = (prob >= self.threshold).astype(np.uint8)
+
+        if roof_accum is not None:
+            for c in range(5):
+                roof_accum[c] /= safe_w
+            roof_mask = np.argmax(_softmax_np(roof_accum, axis=0), axis=0).astype(
+                np.uint8
+            )
+            if "building_mask" in final_results:
+                roof_mask[final_results["building_mask"] <= self.threshold] = 0
+            final_results[self.ROOF_KEY] = roof_mask
+
+        detections = _nms_detections(raw_detections, iou_threshold=self.yolo_iou)
+        det_point_masks = self._detections_to_point_masks(
+            detections,
+            h,
+            w,
+            selected,
+        )
+
+        for point_key in self.POINT_KEYS:
+            if point_key not in selected:
+                continue
+            seg_prob = final_results.get(point_key)
+            det_prob = det_point_masks.get(point_key)
+            if det_prob is not None and seg_prob is not None:
+                final_results[point_key] = np.maximum(
+                    seg_prob,
+                    det_prob,
+                )
+            elif det_prob is not None:
+                final_results[point_key] = det_prob
+            elif seg_prob is None:
+                final_results[point_key] = np.zeros(
+                    (h, w),
+                    dtype=np.float32,
+                )
+
+        for key in selected:
+            if key not in final_results:
+                dtype = np.uint8 if key == self.ROOF_KEY else np.float32
+                final_results[key] = np.zeros(
+                    (h, w),
+                    dtype=dtype,
+                )
+
+        final_results["detections"] = detections
+        return final_results
+
 
 def _resolve_weights_path(weights_path: str) -> Optional[Path]:
     p = Path(weights_path)
@@ -647,7 +846,12 @@ def _resolve_yolo_path(yolo_path: Optional[str]) -> Optional[str]:
         if cand.exists():
             logger.info("Using fallback YOLO weights: %s", cand)
             return str(cand)
-    return None
+
+    # If no local files found, return the model name to trigger auto-download by ultralytics
+    logger.info(
+        "YOLO weights not found locally; triggering auto-download for yolov8s.pt"
+    )
+    return "yolov8s.pt"
 
 
 def load_ensemble_pipeline(

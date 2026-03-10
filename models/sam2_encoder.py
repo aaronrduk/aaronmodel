@@ -27,7 +27,13 @@ SAM2_CHECKPOINT_URL = (
 
 def _repo_search_roots() -> List[Path]:
     roots: List[Path] = []
-    for cand in [Path.cwd(), Path(__file__).resolve().parents[1]]:
+    search_paths = [Path.cwd()]
+    try:
+        search_paths.append(Path(__file__).resolve().parents[1])
+    except NameError:
+        pass
+
+    for cand in search_paths:
         if cand.exists() and cand.is_dir() and cand not in roots:
             roots.append(cand)
     return roots
@@ -80,7 +86,7 @@ def _ensure_sam2_importable() -> bool:
 
     for candidate in _discover_local_sam2_roots():
         if str(candidate) not in sys.path:
-            sys.path.insert(0, str(candidate))
+            sys.path.append(str(candidate))
         if _has_sam2_build():
             logger.info("Loaded SAM2 package from local source tree: %s", candidate)
             return True
@@ -203,7 +209,9 @@ class SAM2Encoder(nn.Module):
     def _extract_features(self, out) -> Dict[str, torch.Tensor]:
         """Parse SAM2 encoder output into named feature maps."""
         # Handle already-formatted dicts (e.g. from fallback)
-        if isinstance(out, dict) and any(key.startswith("feat_s") for key in out.keys()):
+        if isinstance(out, dict) and any(
+            key.startswith("feat_s") for key in out.keys()
+        ):
             return {key: val.contiguous() for key, val in out.items()}
 
         if isinstance(out, dict) and "backbone_fpn" in out:

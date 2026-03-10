@@ -21,8 +21,8 @@ if str(REPO_ROOT) not in sys.path:
 from data.dataset import create_kfold_dataloaders
 from models.losses import MultiTaskLoss
 from models.model import EnsembleSvamitvaModel
-from training.config import TrainingConfig
-from training.trainer import Trainer
+from train_engine.config import TrainingConfig
+from train_engine.trainer import Trainer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,7 +93,9 @@ def main() -> None:
     ckpt_root = Path(args.checkpoint_root)
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
-    for fold_idx, (train_loader, val_loader, val_maps) in enumerate(fold_loaders, start=1):
+    for fold_idx, (train_loader, val_loader, val_maps) in enumerate(
+        fold_loaders, start=1
+    ):
         fold_tag = f"fold_{fold_idx:02d}"
         fold_ckpt = ckpt_root / fold_tag
         fold_logs = fold_ckpt / "logs"
